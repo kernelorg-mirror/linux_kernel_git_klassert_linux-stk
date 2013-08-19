@@ -535,14 +535,20 @@ static int __init pcrypt_init(void)
 
 	err = pcrypt_init_padata(&pdecrypt, "pdecrypt");
 	if (err)
-		goto err_deinit_pencrypt;
+		goto err_fini_pencrypt;
+
+	err = crypto_register_template(&pcrypt_tmpl);
+	if (err)
+		goto err_fini_pdecrypt;
 
 	padata_start(pencrypt.pinst);
 	padata_start(pdecrypt.pinst);
 
-	return crypto_register_template(&pcrypt_tmpl);
+	return 0;
 
-err_deinit_pencrypt:
+err_fini_pdecrypt:
+	pcrypt_fini_padata(&pdecrypt);
+err_fini_pencrypt:
 	pcrypt_fini_padata(&pencrypt);
 err_unreg_kset:
 	kset_unregister(pcrypt_kset);
