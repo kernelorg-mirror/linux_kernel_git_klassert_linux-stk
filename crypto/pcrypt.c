@@ -28,10 +28,26 @@
 #include <linux/kobject.h>
 #include <linux/cpu.h>
 #include <crypto/pcrypt.h>
+#include <crypto/crypto_wq.h>
+
+struct pcrypt_blog_cpu_queue {
+	struct crypto_queue queue;
+	struct work_struct work;
+	struct pcrypt_backlog_queue *blog_queue;
+};
+
+struct pcrypt_backlog_queue {
+	struct pcrypt_blog_cpu_queue __percpu *cpu_queue;
+	struct padata_pcrypt *pcrypt;
+	struct workqueue_struct *wq;
+	int (*handle_blog)(struct crypto_async_request *async_req,
+			   struct pcrypt_backlog_queue *queue);
+};
 
 struct padata_pcrypt {
 	struct padata_instance *pinst;
 	struct workqueue_struct *wq;
+	struct pcrypt_backlog_queue *blog_queue;
 
 	/*
 	 * Cpumask for callback CPUs. It should be
@@ -69,6 +85,41 @@ struct pcrypt_aead_ctx {
 	unsigned int cb_cpu;
 };
 
+/*
+ * This is just for backlog handling, so we keep the cpu until
+ * we sent out everything in the backlog queue.
+ */
+static void pcrypt_backlog_worker(struct work_struct *work)
+{
+	int err;
+	struct pcrypt_backlog_queue *blog_queue;
+	struct pcrypt_blog_cpu_queue *cpu_queue;
+	struct crypto_async_request *async_req, *backlog;
+
+	cpu_queue = container_of(work, struct pcrypt_blog_cpu_queue, work);
+	blog_queue = cpu_queue->blog_queue;
+
+	local_bh_disable();
+
+	backlog = crypto_get_backlog(&cpu_queue->queue);
+	async_req = crypto_dequeue_request(&cpu_queue->queue);
+
+	while (backlog) {
+		if (!async_req)
+			break;
+
+		backlog->complete(backlog, -EINPROGRESS);
+		err = blog_queue->handle_blog(async_req, blog_queue);
+		if (err == -EBUSY) /* Bad, request is out of order now! */
+			break;
+
+		backlog = crypto_get_backlog(&cpu_queue->queue);
+		async_req = crypto_dequeue_request(&cpu_queue->queue);
+	}
+
+	local_bh_enable();
+}
+
 static int pcrypt_do_parallel(struct padata_priv *padata, unsigned int *cb_cpu,
 			      struct padata_pcrypt *pcrypt)
 {
@@ -97,6 +148,90 @@ out:
 	rcu_read_unlock_bh();
 	return padata_do_parallel(pcrypt->pinst, padata, cpu);
 }
+
+static struct pcrypt_backlog_queue *pcrypt_alloc_queue(
+				struct padata_pcrypt *pcrypt, void *handler)
+{
+	int cpu;
+	struct pcrypt_backlog_queue *queue;
+	struct pcrypt_blog_cpu_queue *cpu_queue;
+
+	queue = kzalloc(sizeof(struct pcrypt_backlog_queue), GFP_KERNEL);
+	if (!queue)
+		goto err;
+
+	queue->pcrypt = pcrypt;
+	queue->wq = pcrypt->wq;
+	queue->handle_blog = handler;
+
+	queue->cpu_queue = alloc_percpu(struct pcrypt_blog_cpu_queue);
+	if (!queue->cpu_queue)
+		goto free_queue;
+
+	for_each_possible_cpu(cpu) {
+		cpu_queue = per_cpu_ptr(queue->cpu_queue, cpu);
+		crypto_init_queue(&cpu_queue->queue, 0);
+		INIT_WORK(&cpu_queue->work, pcrypt_backlog_worker);
+		cpu_queue->blog_queue = queue;
+	}
+
+	return queue;
+
+free_queue:
+	kfree(queue);
+err:
+	return NULL;
+}
+
+static void pcrypt_free_queue(struct pcrypt_backlog_queue *queue)
+{
+	int cpu;
+	struct pcrypt_blog_cpu_queue *cpu_queue;
+
+	for_each_possible_cpu(cpu) {
+		cpu_queue = per_cpu_ptr(queue->cpu_queue, cpu);
+		BUG_ON(cpu_queue->queue.qlen);
+	}
+
+	free_percpu(queue->cpu_queue);
+	kfree(queue);
+}
+
+static int pcrypt_enqueue_backlog(struct crypto_async_request *async_req,
+				  struct pcrypt_backlog_queue *queue)
+{
+	int cpu, err;
+	struct pcrypt_blog_cpu_queue *cpu_queue;
+
+	cpu = get_cpu();
+	cpu_queue = this_cpu_ptr(queue->cpu_queue);
+	err = crypto_enqueue_request(&cpu_queue->queue, async_req);
+	queue_work_on(cpu, queue->wq, &cpu_queue->work);
+	put_cpu();
+
+	return err;
+}
+
+static int pcrypt_handle_aead_blog(struct crypto_async_request *async_req,
+				   struct pcrypt_backlog_queue *queue)
+{
+	int err;
+	struct aead_request *req;
+	struct pcrypt_request *preq;
+	struct padata_priv *padata;
+	struct pcrypt_aead_ctx *ctx = crypto_tfm_ctx(async_req->tfm);
+
+	req = container_of(async_req, struct aead_request, base);
+	preq = aead_request_ctx(req);
+	padata = pcrypt_request_padata(preq);
+
+	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, queue->pcrypt);
+	if (err == -EBUSY)
+		err = pcrypt_enqueue_backlog(async_req, queue);
+
+	return err;
+}
+
 
 static int pcrypt_aead_setkey(struct crypto_aead *parent,
 			      const u8 *key, unsigned int keylen)
@@ -181,6 +316,9 @@ static int pcrypt_aead_encrypt(struct aead_request *req)
 	if (!err)
 		return -EINPROGRESS;
 
+	if (unlikely(err == -EBUSY))
+		return pcrypt_enqueue_backlog(&req->base, pencrypt.blog_queue);
+
 	return err;
 }
 
@@ -222,6 +360,9 @@ static int pcrypt_aead_decrypt(struct aead_request *req)
 	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, &pdecrypt);
 	if (!err)
 		return -EINPROGRESS;
+
+	if (unlikely(err == -EBUSY))
+		return pcrypt_enqueue_backlog(&req->base, pdecrypt.blog_queue);
 
 	return err;
 }
@@ -266,6 +407,9 @@ static int pcrypt_aead_givencrypt(struct aead_givcrypt_request *req)
 	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, &pencrypt);
 	if (!err)
 		return -EINPROGRESS;
+
+	if (unlikely(err == -EBUSY))
+		return pcrypt_enqueue_backlog(&areq->base, pencrypt.blog_queue);
 
 	return err;
 }
@@ -480,14 +624,21 @@ static int pcrypt_init_padata(struct padata_pcrypt *pcrypt,
 	if (ret)
 		goto err_free_cpumask;
 
+	pcrypt->blog_queue = pcrypt_alloc_queue(pcrypt,
+						pcrypt_handle_aead_blog);
+	if (!pcrypt->blog_queue)
+		goto err_unregister_notifier;
+
 	ret = pcrypt_sysfs_add(pcrypt->pinst, name);
 	if (ret)
-		goto err_unregister_notifier;
+		goto err_free_blog;
 
 	put_online_cpus();
 
 	return ret;
 
+err_free_blog:
+	pcrypt_free_queue(pcrypt->blog_queue);
 err_unregister_notifier:
 	padata_unregister_cpumask_notifier(pcrypt->pinst, &pcrypt->nblock);
 err_free_cpumask:
@@ -510,6 +661,7 @@ static void pcrypt_fini_padata(struct padata_pcrypt *pcrypt)
 
 	padata_stop(pcrypt->pinst);
 	padata_unregister_cpumask_notifier(pcrypt->pinst, &pcrypt->nblock);
+	pcrypt_free_queue(pcrypt->blog_queue);
 	destroy_workqueue(pcrypt->wq);
 	padata_free(pcrypt->pinst);
 }
