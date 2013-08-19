@@ -286,7 +286,8 @@ found:
 			continue;
 
 		if (strcmp(alg->cra_driver_name, q->cra_driver_name) &&
-		    q->cra_priority > alg->cra_priority)
+		    (q->cra_priority > alg->cra_priority ||
+		     alg->cra_flags & CRYPTO_ALG_MULTI_INSTANCE))
 			continue;
 
 		crypto_remove_spawns(q, &list, alg);

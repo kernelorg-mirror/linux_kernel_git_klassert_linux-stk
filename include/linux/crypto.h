@@ -82,6 +82,11 @@
 #define CRYPTO_ALG_KERN_DRIVER_ONLY	0x00001000
 
 /*
+ * Set if the algorithm supports multiple instances of the same type.
+ */
+#define CRYPTO_ALG_MULTI_INSTANCE	0x00002000
+
+/*
  * Transform masks and values (for crt_flags).
  */
 #define CRYPTO_TFM_REQ_MASK		0x000fff00
