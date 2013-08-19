@@ -323,6 +323,8 @@ int crypto_unregister_algs(struct crypto_alg *algs, int count);
  */
 int crypto_has_alg(const char *name, u32 type, u32 mask);
 
+int crypto_tfm_has_alg(struct crypto_tfm *tfm, const char *name);
+
 /*
  * Transforms: user-instantiated objects which encapsulate algorithms
  * and core processing logic.  Managed via crypto_alloc_*() and

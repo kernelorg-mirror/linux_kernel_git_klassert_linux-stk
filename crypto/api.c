@@ -596,5 +596,20 @@ int crypto_has_alg(const char *name, u32 type, u32 mask)
 }
 EXPORT_SYMBOL_GPL(crypto_has_alg);
 
+int crypto_tfm_has_alg(struct crypto_tfm *tfm, const char *name)
+{
+	int ret = 0;
+	const char *match;
+	const char *alg_name = crypto_tfm_alg_name(tfm);
+
+	match = strnstr(alg_name, name, strlen(alg_name));
+	if (match)
+		ret = 1;
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(crypto_tfm_has_alg);
+
+
 MODULE_DESCRIPTION("Cryptographic core API");
 MODULE_LICENSE("GPL");
