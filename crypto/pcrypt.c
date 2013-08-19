@@ -78,11 +78,16 @@ static struct kset           *pcrypt_kset;
 struct pcrypt_instance_ctx {
 	struct crypto_spawn spawn;
 	unsigned int tfm_count;
+	struct padata_pcrypt *pencrypt;
+	struct padata_pcrypt *pdecrypt;
 };
 
 struct pcrypt_aead_ctx {
 	struct crypto_aead *child;
 	unsigned int cb_cpu;
+	struct padata_pcrypt *pencrypt;
+	struct padata_pcrypt *pdecrypt;
+
 };
 
 /*
@@ -312,12 +317,13 @@ static int pcrypt_aead_encrypt(struct aead_request *req)
 			       req->cryptlen, req->iv);
 	aead_request_set_assoc(creq, req->assoc, req->assoclen);
 
-	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, &pencrypt);
+	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, ctx->pencrypt);
 	if (!err)
 		return -EINPROGRESS;
 
 	if (unlikely(err == -EBUSY))
-		return pcrypt_enqueue_backlog(&req->base, pencrypt.blog_queue);
+		return pcrypt_enqueue_backlog(&req->base,
+					      ctx->pencrypt->blog_queue);
 
 	return err;
 }
@@ -357,12 +363,13 @@ static int pcrypt_aead_decrypt(struct aead_request *req)
 			       req->cryptlen, req->iv);
 	aead_request_set_assoc(creq, req->assoc, req->assoclen);
 
-	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, &pdecrypt);
+	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, ctx->pdecrypt);
 	if (!err)
 		return -EINPROGRESS;
 
 	if (unlikely(err == -EBUSY))
-		return pcrypt_enqueue_backlog(&req->base, pdecrypt.blog_queue);
+		return pcrypt_enqueue_backlog(&req->base,
+					      ctx->pdecrypt->blog_queue);
 
 	return err;
 }
@@ -404,12 +411,13 @@ static int pcrypt_aead_givencrypt(struct aead_givcrypt_request *req)
 	aead_givcrypt_set_assoc(creq, areq->assoc, areq->assoclen);
 	aead_givcrypt_set_giv(creq, req->giv, req->seq);
 
-	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, &pencrypt);
+	err = pcrypt_do_parallel(padata, &ctx->cb_cpu, ctx->pencrypt);
 	if (!err)
 		return -EINPROGRESS;
 
 	if (unlikely(err == -EBUSY))
-		return pcrypt_enqueue_backlog(&areq->base, pencrypt.blog_queue);
+		return pcrypt_enqueue_backlog(&areq->base,
+					      ctx->pencrypt->blog_queue);
 
 	return err;
 }
@@ -436,6 +444,9 @@ static int pcrypt_aead_init_tfm(struct crypto_tfm *tfm)
 		return PTR_ERR(cipher);
 
 	ctx->child = cipher;
+	ctx->pencrypt = ictx->pencrypt;
+	ctx->pdecrypt = ictx->pdecrypt;
+
 	tfm->crt_aead.reqsize = sizeof(struct pcrypt_request)
 		+ sizeof(struct aead_givcrypt_request)
 		+ crypto_aead_reqsize(cipher);
@@ -474,6 +485,9 @@ static struct crypto_instance *pcrypt_alloc_instance(struct crypto_alg *alg)
 				CRYPTO_ALG_TYPE_MASK);
 	if (err)
 		goto out_free_inst;
+
+	ctx->pencrypt = &pencrypt;
+	ctx->pdecrypt = &pdecrypt;
 
 	inst->alg.cra_priority = alg->cra_priority + 100;
 	inst->alg.cra_blocksize = alg->cra_blocksize;
