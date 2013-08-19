@@ -27,6 +27,7 @@
 #include <linux/notifier.h>
 #include <linux/kobject.h>
 #include <linux/cpu.h>
+#include <linux/rtnetlink.h>
 #include <crypto/pcrypt.h>
 #include <crypto/crypto_wq.h>
 
@@ -80,6 +81,8 @@ struct pcrypt_instance_ctx {
 	unsigned int tfm_count;
 	struct padata_pcrypt *pencrypt;
 	struct padata_pcrypt *pdecrypt;
+	u8 flags;
+#define	PCRYPT_DEFAULT_INSTANCE	1
 };
 
 struct pcrypt_aead_ctx {
@@ -461,108 +464,6 @@ static void pcrypt_aead_exit_tfm(struct crypto_tfm *tfm)
 	crypto_free_aead(ctx->child);
 }
 
-static struct crypto_instance *pcrypt_alloc_instance(struct crypto_alg *alg)
-{
-	struct crypto_instance *inst;
-	struct pcrypt_instance_ctx *ctx;
-	int err;
-
-	inst = kzalloc(sizeof(*inst) + sizeof(*ctx), GFP_KERNEL);
-	if (!inst) {
-		inst = ERR_PTR(-ENOMEM);
-		goto out;
-	}
-
-	err = -ENAMETOOLONG;
-	if (snprintf(inst->alg.cra_driver_name, CRYPTO_MAX_ALG_NAME,
-		     "pcrypt(%s)", alg->cra_driver_name) >= CRYPTO_MAX_ALG_NAME)
-		goto out_free_inst;
-
-	memcpy(inst->alg.cra_name, alg->cra_name, CRYPTO_MAX_ALG_NAME);
-
-	ctx = crypto_instance_ctx(inst);
-	err = crypto_init_spawn(&ctx->spawn, alg, inst,
-				CRYPTO_ALG_TYPE_MASK);
-	if (err)
-		goto out_free_inst;
-
-	ctx->pencrypt = &pencrypt;
-	ctx->pdecrypt = &pdecrypt;
-
-	inst->alg.cra_priority = alg->cra_priority + 100;
-	inst->alg.cra_blocksize = alg->cra_blocksize;
-	inst->alg.cra_alignmask = alg->cra_alignmask;
-
-out:
-	return inst;
-
-out_free_inst:
-	kfree(inst);
-	inst = ERR_PTR(err);
-	goto out;
-}
-
-static struct crypto_instance *pcrypt_alloc_aead(struct rtattr **tb,
-						 u32 type, u32 mask)
-{
-	struct crypto_instance *inst;
-	struct crypto_alg *alg;
-
-	alg = crypto_get_attr_alg(tb, type, (mask & CRYPTO_ALG_TYPE_MASK));
-	if (IS_ERR(alg))
-		return ERR_CAST(alg);
-
-	inst = pcrypt_alloc_instance(alg);
-	if (IS_ERR(inst))
-		goto out_put_alg;
-
-	inst->alg.cra_flags = CRYPTO_ALG_TYPE_AEAD | CRYPTO_ALG_ASYNC;
-	inst->alg.cra_type = &crypto_aead_type;
-
-	inst->alg.cra_aead.ivsize = alg->cra_aead.ivsize;
-	inst->alg.cra_aead.geniv = alg->cra_aead.geniv;
-	inst->alg.cra_aead.maxauthsize = alg->cra_aead.maxauthsize;
-
-	inst->alg.cra_ctxsize = sizeof(struct pcrypt_aead_ctx);
-
-	inst->alg.cra_init = pcrypt_aead_init_tfm;
-	inst->alg.cra_exit = pcrypt_aead_exit_tfm;
-
-	inst->alg.cra_aead.setkey = pcrypt_aead_setkey;
-	inst->alg.cra_aead.setauthsize = pcrypt_aead_setauthsize;
-	inst->alg.cra_aead.encrypt = pcrypt_aead_encrypt;
-	inst->alg.cra_aead.decrypt = pcrypt_aead_decrypt;
-	inst->alg.cra_aead.givencrypt = pcrypt_aead_givencrypt;
-
-out_put_alg:
-	crypto_mod_put(alg);
-	return inst;
-}
-
-static struct crypto_instance *pcrypt_alloc(struct rtattr **tb)
-{
-	struct crypto_attr_type *algt;
-
-	algt = crypto_get_attr_type(tb);
-	if (IS_ERR(algt))
-		return ERR_CAST(algt);
-
-	switch (algt->type & algt->mask & CRYPTO_ALG_TYPE_MASK) {
-	case CRYPTO_ALG_TYPE_AEAD:
-		return pcrypt_alloc_aead(tb, algt->type, algt->mask);
-	}
-
-	return ERR_PTR(-EINVAL);
-}
-
-static void pcrypt_free(struct crypto_instance *inst)
-{
-	struct pcrypt_instance_ctx *ctx = crypto_instance_ctx(inst);
-
-	crypto_drop_spawn(&ctx->spawn);
-	kfree(inst);
-}
-
 static int pcrypt_cpumask_change_notify(struct notifier_block *self,
 					unsigned long val, void *data)
 {
@@ -678,6 +579,210 @@ static void pcrypt_fini_padata(struct padata_pcrypt *pcrypt)
 	pcrypt_free_queue(pcrypt->blog_queue);
 	destroy_workqueue(pcrypt->wq);
 	padata_free(pcrypt->pinst);
+}
+
+static int pcrypt_init_instance(struct crypto_instance *inst,
+				struct crypto_alg *alg,
+				struct rtattr *rta)
+{
+	unsigned int num;
+	int err;
+	char enc_name[CRYPTO_MAX_ALG_NAME];
+	char dec_name[CRYPTO_MAX_ALG_NAME];
+	struct pcrypt_instance_ctx *ctx = crypto_instance_ctx(inst);
+
+	err = crypto_attr_u32(rta, &num);
+	if (err)
+		goto err;
+
+	err = -EINVAL;
+	if (snprintf(enc_name, CRYPTO_MAX_ALG_NAME,
+		     "pencrypt-%u", num) >= CRYPTO_MAX_ALG_NAME)
+		goto err;
+
+	if (snprintf(dec_name, CRYPTO_MAX_ALG_NAME,
+		     "pdecrypt-%u", num) >= CRYPTO_MAX_ALG_NAME)
+		goto err;
+
+	err = -ENAMETOOLONG;
+	if (snprintf(inst->alg.cra_driver_name, CRYPTO_MAX_ALG_NAME,
+		     "pcrypt(%s,%u)", alg->cra_driver_name,
+		     num) >= CRYPTO_MAX_ALG_NAME)
+		goto err;
+
+	memcpy(inst->alg.cra_name, alg->cra_name, CRYPTO_MAX_ALG_NAME);
+
+	err = -ENOMEM;
+	ctx->pencrypt = kzalloc(sizeof(struct padata_pcrypt), GFP_KERNEL);
+	if (!ctx->pencrypt)
+		goto err;
+
+	ctx->pdecrypt = kzalloc(sizeof(struct padata_pcrypt), GFP_KERNEL);
+	if (!ctx->pencrypt)
+		goto err_free_pencrypt;
+
+	err = pcrypt_init_padata(ctx->pencrypt, enc_name);
+	if (err)
+		goto err_free_pdecrypt;
+
+	err = pcrypt_init_padata(ctx->pdecrypt, dec_name);
+	if (err)
+		goto err_fini_pencrypt;
+
+	inst->alg.cra_priority = alg->cra_priority + 100;
+
+	return 0;
+
+err_fini_pencrypt:
+	pcrypt_fini_padata(ctx->pencrypt);
+err_free_pdecrypt:
+	kfree(ctx->pdecrypt);
+err_free_pencrypt:
+	kfree(ctx->pencrypt);
+err:
+	return err;
+}
+
+static void pcrypt_fini_instance(struct crypto_instance *inst)
+{
+	struct pcrypt_instance_ctx *ctx = crypto_instance_ctx(inst);
+
+	pcrypt_fini_padata(ctx->pencrypt);
+	pcrypt_fini_padata(ctx->pdecrypt);
+	kfree(ctx->pencrypt);
+	kfree(ctx->pdecrypt);
+}
+
+static int pcrypt_init_default_instance(struct crypto_instance *inst,
+					struct crypto_alg *alg)
+{
+	struct pcrypt_instance_ctx *ctx = crypto_instance_ctx(inst);
+
+	if (snprintf(inst->alg.cra_driver_name, CRYPTO_MAX_ALG_NAME,
+		     "pcrypt(%s)", alg->cra_driver_name) >= CRYPTO_MAX_ALG_NAME)
+		return -ENAMETOOLONG;
+
+	memcpy(inst->alg.cra_name, alg->cra_name, CRYPTO_MAX_ALG_NAME);
+
+	ctx->flags |= PCRYPT_DEFAULT_INSTANCE;
+	ctx->pencrypt = &pencrypt;
+	ctx->pdecrypt = &pdecrypt;
+
+	inst->alg.cra_priority = alg->cra_priority + 200;
+
+	return 0;
+}
+
+static int pcrypt_attr_u32(struct rtattr *rta)
+{
+	return (rta && rta->rta_type == CRYPTOA_U32) ? 1 : 0;
+}
+
+static struct crypto_instance *pcrypt_alloc_instance(struct crypto_alg *alg,
+						     struct rtattr *rta)
+{
+	struct crypto_instance *inst;
+	struct pcrypt_instance_ctx *ctx;
+	int err;
+
+	inst = kzalloc(sizeof(*inst) + sizeof(*ctx), GFP_KERNEL);
+	if (!inst) {
+		inst = ERR_PTR(-ENOMEM);
+		goto out;
+	}
+
+	ctx = crypto_instance_ctx(inst);
+	err = crypto_init_spawn(&ctx->spawn, alg, inst,
+				CRYPTO_ALG_TYPE_MASK);
+	if (err)
+		goto out_free_inst;
+
+	inst->alg.cra_blocksize = alg->cra_blocksize;
+	inst->alg.cra_alignmask = alg->cra_alignmask;
+
+	/* If the next attribute is of type CRYPTOA_U32, we use separate
+	 * padata instances for this pcrypt instance. If not, we fall back
+	 * to use the default padata instances. */
+	if (pcrypt_attr_u32(rta))
+		err = pcrypt_init_instance(inst, alg, rta);
+	else
+		err = pcrypt_init_default_instance(inst, alg);
+
+	if (err)
+		goto out_free_inst;
+
+out:
+	return inst;
+
+out_free_inst:
+	kfree(inst);
+	inst = ERR_PTR(err);
+	goto out;
+}
+
+static struct crypto_instance *pcrypt_alloc_aead(struct rtattr **tb,
+						 u32 type, u32 mask)
+{
+	struct crypto_instance *inst;
+	struct crypto_alg *alg;
+
+	alg = crypto_get_attr_alg(tb, type, (mask & CRYPTO_ALG_TYPE_MASK));
+	if (IS_ERR(alg))
+		return ERR_CAST(alg);
+
+	inst = pcrypt_alloc_instance(alg, tb[2]);
+	if (IS_ERR(inst))
+		goto out_put_alg;
+
+	inst->alg.cra_flags = CRYPTO_ALG_TYPE_AEAD | CRYPTO_ALG_ASYNC
+			      | CRYPTO_ALG_MULTI_INSTANCE;
+	inst->alg.cra_type = &crypto_aead_type;
+
+	inst->alg.cra_aead.ivsize = alg->cra_aead.ivsize;
+	inst->alg.cra_aead.geniv = alg->cra_aead.geniv;
+	inst->alg.cra_aead.maxauthsize = alg->cra_aead.maxauthsize;
+
+	inst->alg.cra_ctxsize = sizeof(struct pcrypt_aead_ctx);
+
+	inst->alg.cra_init = pcrypt_aead_init_tfm;
+	inst->alg.cra_exit = pcrypt_aead_exit_tfm;
+
+	inst->alg.cra_aead.setkey = pcrypt_aead_setkey;
+	inst->alg.cra_aead.setauthsize = pcrypt_aead_setauthsize;
+	inst->alg.cra_aead.encrypt = pcrypt_aead_encrypt;
+	inst->alg.cra_aead.decrypt = pcrypt_aead_decrypt;
+	inst->alg.cra_aead.givencrypt = pcrypt_aead_givencrypt;
+
+out_put_alg:
+	crypto_mod_put(alg);
+	return inst;
+}
+
+static struct crypto_instance *pcrypt_alloc(struct rtattr **tb)
+{
+	struct crypto_attr_type *algt;
+
+	algt = crypto_get_attr_type(tb);
+	if (IS_ERR(algt))
+		return ERR_CAST(algt);
+
+	switch (algt->type & algt->mask & CRYPTO_ALG_TYPE_MASK) {
+	case CRYPTO_ALG_TYPE_AEAD:
+		return pcrypt_alloc_aead(tb, algt->type, algt->mask);
+	}
+
+	return ERR_PTR(-EINVAL);
+}
+
+static void pcrypt_free(struct crypto_instance *inst)
+{
+	struct pcrypt_instance_ctx *ctx = crypto_instance_ctx(inst);
+
+	if (!(ctx->flags & PCRYPT_DEFAULT_INSTANCE))
+		pcrypt_fini_instance(inst);
+
+	crypto_drop_spawn(&ctx->spawn);
+	kfree(inst);
 }
 
 static struct crypto_template pcrypt_tmpl = {
