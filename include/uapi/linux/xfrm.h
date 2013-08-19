@@ -116,6 +116,10 @@ struct xfrm_algo_aead {
 	char		alg_key[0];
 };
 
+struct xfrm_algo_driver {
+	char		driver_name[64];
+};
+
 struct xfrm_stats {
 	__u32	replay_window;
 	__u32	replay;
@@ -298,6 +302,7 @@ enum xfrm_attr_type_t {
 	XFRMA_TFCPAD,		/* __u32 */
 	XFRMA_REPLAY_ESN_VAL,	/* struct xfrm_replay_esn */
 	XFRMA_SA_EXTRA_FLAGS,	/* __u32 */
+	XFRMA_ALG_DRIVER,	/* struct xfrm_algo_driver */
 	__XFRMA_MAX
 
 #define XFRMA_MAX (__XFRMA_MAX - 1)

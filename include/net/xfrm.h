@@ -173,6 +173,8 @@ struct xfrm_state {
 	struct xfrm_algo	*calg;
 	struct xfrm_algo_aead	*aead;
 
+	struct xfrm_algo_driver	*algo_driver;
+
 	/* Data for encapsulator */
 	struct xfrm_encap_tmpl	*encap;
 

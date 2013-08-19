@@ -555,6 +555,13 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 			goto error;
 	}
 
+	if (attrs[XFRMA_ALG_DRIVER]) {
+		x->algo_driver = kmemdup(nla_data(attrs[XFRMA_ALG_DRIVER]),
+					 sizeof (*x->algo_driver), GFP_KERNEL);
+		if (x->algo_driver == NULL)
+			goto error;
+	}
+
 	xfrm_mark_get(attrs, &x->mark);
 
 	err = __xfrm_init_state(x, false);
@@ -2315,6 +2322,7 @@ static const struct nla_policy xfrma_policy[XFRMA_MAX+1] = {
 	[XFRMA_TFCPAD]		= { .type = NLA_U32 },
 	[XFRMA_REPLAY_ESN_VAL]	= { .len = sizeof(struct xfrm_replay_state_esn) },
 	[XFRMA_SA_EXTRA_FLAGS]	= { .type = NLA_U32 },
+	[XFRMA_ALG_DRIVER]	= { .len = sizeof(struct xfrm_algo_driver) },
 };
 
 static const struct xfrm_link {
