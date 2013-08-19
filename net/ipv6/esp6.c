@@ -468,14 +468,29 @@ static int esp_init_aead(struct xfrm_state *x)
 {
 	struct esp_data *esp = x->data;
 	struct crypto_aead *aead;
-	int err;
+	char aead_name[CRYPTO_MAX_ALG_NAME];
+	int err = -ENAMETOOLONG;;
 
-	aead = crypto_alloc_aead(x->aead->alg_name, 0, 0);
+	if (x->algo_driver) {
+		if (snprintf(aead_name, CRYPTO_MAX_ALG_NAME, "%s",
+			     x->algo_driver->driver_name) >= CRYPTO_MAX_ALG_NAME)
+			goto error;
+	} else {
+		if (snprintf(aead_name, CRYPTO_MAX_ALG_NAME, "%s",
+			     x->aead->alg_name) >= CRYPTO_MAX_ALG_NAME)
+			goto error;
+	}
+
+	aead = crypto_alloc_aead(aead_name, 0, 0);
 	err = PTR_ERR(aead);
 	if (IS_ERR(aead))
 		goto error;
 
 	esp->aead = aead;
+
+	err = -EINVAL;
+	if (!crypto_tfm_has_alg(crypto_aead_tfm(aead), x->aead->alg_name))
+		goto error;
 
 	err = crypto_aead_setkey(aead, x->aead->alg_key,
 				 (x->aead->alg_key_len + 7) / 8);
@@ -508,7 +523,12 @@ static int esp_init_authenc(struct xfrm_state *x)
 
 	err = -ENAMETOOLONG;
 
-	if ((x->props.flags & XFRM_STATE_ESN)) {
+	if (x->algo_driver) {
+		if (snprintf(authenc_name, CRYPTO_MAX_ALG_NAME, "%s",
+			     x->algo_driver->driver_name) >= CRYPTO_MAX_ALG_NAME)
+			goto error;
+
+	} else if ((x->props.flags & XFRM_STATE_ESN)) {
 		if (snprintf(authenc_name, CRYPTO_MAX_ALG_NAME,
 			     "authencesn(%s,%s)",
 			     x->aalg ? x->aalg->alg_name : "digest_null",
@@ -528,6 +548,13 @@ static int esp_init_authenc(struct xfrm_state *x)
 		goto error;
 
 	esp->aead = aead;
+
+	err = -EINVAL;
+	if (!crypto_tfm_has_alg(crypto_aead_tfm(aead), x->ealg->alg_name))
+		goto error;
+	if (x->aalg && !crypto_tfm_has_alg(crypto_aead_tfm(aead),
+					   x->aalg->alg_name))
+		goto error;
 
 	keylen = (x->aalg ? (x->aalg->alg_key_len + 7) / 8 : 0) +
 		 (x->ealg->alg_key_len + 7) / 8 + RTA_SPACE(sizeof(*param));
