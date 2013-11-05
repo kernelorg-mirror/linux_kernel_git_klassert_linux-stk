@@ -3445,7 +3445,7 @@ EXPORT_SYMBOL_GPL(skb_to_sgvec);
  *
  *	If @tailbits is given, make sure that there is space to write @tailbits
  *	bytes of data beyond current end of socket buffer.  @trailer will be
- *	set to point to the skb in which this space begins.
+ *	linearized and set to point to the skb in which this space begins.
  *
  *	The number of scatterlist elements required to completely map the
  *	COW'd and extended socket buffer will be returned.
@@ -3456,11 +3456,10 @@ int skb_cow_data(struct sk_buff *skb, int tailbits, struct sk_buff **trailer)
 	int elt;
 	struct sk_buff *skb1, **skb_p;
 
-	/* If skb is cloned or its head is paged, reallocate
-	 * head pulling out all the pages (pages are considered not writable
-	 * at the moment even if they are anonymous).
+	/* If skb is cloned reallocate head pulling out all the pages (pages are
+	 * considered not writable at the moment even if they are anonymous).
 	 */
-	if ((skb_cloned(skb) || skb_shinfo(skb)->nr_frags) &&
+	if (skb_cloned(skb) &&
 	    __pskb_pull_tail(skb, skb_pagelen(skb)-skb_headlen(skb)) == NULL)
 		return -ENOMEM;
 
@@ -3471,18 +3470,26 @@ int skb_cow_data(struct sk_buff *skb, int tailbits, struct sk_buff **trailer)
 		 * good frames. OK, on miss we reallocate and reserve even more
 		 * space, 128 bytes is fair. */
 
-		if (skb_tailroom(skb) < tailbits &&
-		    pskb_expand_head(skb, 0, tailbits-skb_tailroom(skb)+128, GFP_ATOMIC))
-			return -ENOMEM;
+		if (tailbits) {
+			if (skb_linearize(skb))
+				return -ENOMEM;
+
+			if (skb_tailroom(skb) < tailbits) {
+				int ntail = tailbits - skb_tailroom(skb) + 128;
+
+				if (pskb_expand_head(skb, 0, ntail, GFP_ATOMIC))
+					return -ENOMEM;
+			}
+		}
 
 		/* Voila! */
 		*trailer = skb;
-		return 1;
+		return skb_shinfo(skb)->nr_frags + 1;
 	}
 
 	/* Misery. We are in troubles, going to mincer fragments... */
 
-	elt = 1;
+	elt = skb_shinfo(skb)->nr_frags + 1;
 	skb_p = &skb_shinfo(skb)->frag_list;
 	copyflag = 0;
 
@@ -3534,7 +3541,7 @@ int skb_cow_data(struct sk_buff *skb, int tailbits, struct sk_buff **trailer)
 			kfree_skb(skb1);
 			skb1 = skb2;
 		}
-		elt++;
+		elt += skb_shinfo(skb1)->nr_frags + 1;
 		*trailer = skb1;
 		skb_p = &skb1->next;
 	}
