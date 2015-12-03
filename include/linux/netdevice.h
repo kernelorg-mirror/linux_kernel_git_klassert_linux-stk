@@ -778,6 +778,12 @@ static inline bool netdev_phys_item_id_same(struct netdev_phys_item_id *a,
 
 typedef u16 (*select_queue_fallback_t)(struct net_device *dev,
 				       struct sk_buff *skb);
+struct xfrmdev_ops {
+	int			(*xdo_dev_encap) (struct sk_buff *skb);
+	int			(*xdo_dev_prepare) (struct sk_buff *skb);
+	int			(*xdo_dev_validate) (struct sk_buff *skb);
+	void			(*xdo_dev_resume) (struct sk_buff *skb, int err);
+};
 
 /*
  * This structure defines the management hooks for network devices.
@@ -1624,6 +1630,9 @@ struct net_device {
 #endif
 #ifdef CONFIG_NET_L3_MASTER_DEV
 	const struct l3mdev_ops	*l3mdev_ops;
+#endif
+#ifdef CONFIG_XFRM
+	const struct xfrmdev_ops *xfrmdev_ops;
 #endif
 
 	const struct header_ops *header_ops;
