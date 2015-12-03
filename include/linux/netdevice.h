@@ -2679,6 +2679,10 @@ struct softnet_data {
 	struct Qdisc		**output_queue_tailp;
 	struct sk_buff		*completion_queue;
 
+#ifdef CONFIG_XFRM
+	struct sk_buff_head	xfrm_backlog;
+#endif
+
 #ifdef CONFIG_RPS
 	/* Elements below can be accessed between CPUs for RPS */
 	struct call_single_data	csd ____cacheline_aligned_in_smp;
