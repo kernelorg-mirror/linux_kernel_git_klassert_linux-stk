@@ -86,6 +86,15 @@ static inline struct scatterlist *esp_req_sg(struct crypto_aead *aead,
 			     __alignof__(struct scatterlist));
 }
 
+static void esp_output_done2(struct crypto_async_request *base, int err)
+{
+	struct sk_buff *skb = base->data;
+
+	kfree(ESP_SKB_CB(skb)->tmp);
+
+	skb_dst(skb)->dev->xfrmdev_ops->xdo_dev_resume(skb, err);
+}
+
 static void esp_output_done(struct crypto_async_request *base, int err)
 {
 	struct sk_buff *skb = base->data;
@@ -118,6 +127,69 @@ static void esp_output_done_esn(struct crypto_async_request *base, int err)
 	esp_output_done(base, err);
 }
 
+static void esp4_gso_encap(struct xfrm_state *x, struct sk_buff *skb)
+{
+	struct ip_esp_hdr *esph;
+	struct iphdr *iph = ip_hdr(skb);
+	int proto = iph->protocol;
+
+	skb_push(skb, -skb_network_offset(skb));
+	esph = ip_esp_hdr(skb);
+	*skb_mac_header(skb) = IPPROTO_ESP;
+
+	esph->spi = x->id.spi;
+
+	/* save off the next_proto in seq_no to be used in
+	 * esp4_gso_encap() for invoking protocol specific
+	 * segmentation offload.
+	 */
+	esph->seq_no = proto;
+}
+
+static int esp_output_tail(struct xfrm_state *x, struct sk_buff *skb)
+{
+	int err;
+	__be32 *seqhi;
+	int seqhilen;
+	u8 *iv;
+	struct crypto_aead *aead;
+	struct aead_request *req;
+	void *tmp;
+
+	aead = x->data;
+	tmp = ESP_SKB_CB(skb)->tmp;
+
+	seqhilen = 0;
+	if (x->props.flags & XFRM_STATE_ESN)
+		seqhilen += sizeof(__be32);
+
+	seqhi = esp_tmp_seqhi(tmp);
+	iv = esp_tmp_iv(aead, tmp, seqhilen);
+	req = esp_tmp_req(aead, iv);
+
+	aead_request_set_callback(req, 0, esp_output_done2, skb);
+
+	err = crypto_aead_encrypt(req);
+
+	switch (err) {
+	case -EINPROGRESS:
+		goto error;
+
+	case -EBUSY:
+		err = NET_XMIT_DROP;
+		break;
+
+	case 0:
+		if ((x->props.flags & XFRM_STATE_ESN))
+			esp_output_restore_header(skb);
+	}
+
+	kfree(tmp);
+
+error:
+	return err;
+}
+
 static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
 {
 	int err;
@@ -140,6 +212,7 @@ static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
 	int seqhilen;
 	__be32 *seqhi;
 	__be64 seqno;
+	int proto;
 
 	/* skb is pure payload to encrypt */
 
@@ -167,6 +240,7 @@ static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
 
 	assoclen = sizeof(*esph);
 	seqhilen = 0;
+	proto = ip_esp_hdr(skb)->seq_no;
 
 	if (x->props.flags & XFRM_STATE_ESN) {
 		seqhilen += sizeof(__be32);
@@ -196,12 +270,18 @@ static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
 			tail[i] = i + 1;
 	} while (0);
 	tail[plen - 2] = plen - 2;
-	tail[plen - 1] = *skb_mac_header(skb);
+	if (!skb->hw_xfrm)
+		tail[plen - 1] = *skb_mac_header(skb);
+	else
+		tail[plen - 1] = proto;
+
 	pskb_put(skb, trailer, clen - skb->len + alen);
 
 	skb_push(skb, -skb_network_offset(skb));
 	esph = ip_esp_hdr(skb);
-	*skb_mac_header(skb) = IPPROTO_ESP;
+
+	if (!skb->hw_xfrm)
+		*skb_mac_header(skb) = IPPROTO_ESP;
 
 	/* this is non-NULL only with UDP Encapsulation */
 	if (x->encap) {
@@ -271,6 +351,10 @@ static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
 	       min(ivlen, 8));
 
 	ESP_SKB_CB(skb)->tmp = tmp;
+
+	if (skb->hw_xfrm)
+		return 0;
+
 	err = crypto_aead_encrypt(req);
 
 	switch (err) {
@@ -735,7 +819,9 @@ static const struct xfrm_type esp_type =
 	.destructor	= esp_destroy,
 	.get_mtu	= esp4_get_mtu,
 	.input		= esp_input,
-	.output		= esp_output
+	.output		= esp_output,
+	.output_tail	= esp_output_tail,
+	.encap		= esp4_gso_encap,
 };
 
 static struct xfrm4_protocol esp4_protocol = {

@@ -724,7 +724,8 @@ struct sk_buff {
 	__u8			inner_protocol_type:1;
 	__u8			remcsum_offload:1;
 	__u8			xfrm_gro:1;
-	/* 2 or 4 bit hole */
+	__u8			hw_xfrm:1;
+	/* 1 or 3 bit hole */
 
 #ifdef CONFIG_NET_SCHED
 	__u16			tc_index;	/* traffic control index */
