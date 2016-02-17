@@ -207,7 +207,6 @@ out:
 
 static int xfrm_dev_unregister(struct net_device *dev)
 {
-
 	return NOTIFY_DONE;
 }
 
@@ -216,6 +215,16 @@ static int xfrm_dev_feat_change(struct net_device *dev)
 	if (!(dev->hw_features & NETIF_F_ESP_OFFLOAD) &&
 	    dev->features & NETIF_F_ESP_OFFLOAD)
 		dev->xfrmdev_ops = &xfrmdev_soft_ops;
+
+	return NOTIFY_DONE;
+}
+
+static int xfrm_dev_down(struct net_device *dev)
+{
+	if (dev->hw_features & NETIF_F_ESP_OFFLOAD)
+		xfrm_dev_state_flush(dev_net(dev), dev, true);
+
+	xfrm_garbage_collect(dev_net(dev));
 
 	return NOTIFY_DONE;
 }
@@ -235,7 +244,7 @@ static int xfrm_dev_event(struct notifier_block *this, unsigned long event, void
 		return xfrm_dev_feat_change(dev);
 
 	case NETDEV_DOWN:
-		xfrm_garbage_collect(dev_net(dev));
+		return xfrm_dev_down(dev);
 	}
 	return NOTIFY_DONE;
 }

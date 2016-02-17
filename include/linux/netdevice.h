@@ -779,6 +779,9 @@ static inline bool netdev_phys_item_id_same(struct netdev_phys_item_id *a,
 typedef u16 (*select_queue_fallback_t)(struct net_device *dev,
 				       struct sk_buff *skb);
 struct xfrmdev_ops {
+	int			(*xdo_dev_state_add) (struct xfrm_state *x);
+	void			(*xdo_dev_state_delete) (struct xfrm_state *x);
+	int			(*xdo_dev_state_update) (struct xfrm_state *x);
 	int			(*xdo_dev_encap) (struct sk_buff *skb);
 	int			(*xdo_dev_prepare) (struct sk_buff *skb);
 	int			(*xdo_dev_validate) (struct sk_buff *skb);

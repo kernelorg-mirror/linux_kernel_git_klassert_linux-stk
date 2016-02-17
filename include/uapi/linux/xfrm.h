@@ -2,6 +2,7 @@
 #define _LINUX_XFRM_H
 
 #include <linux/in6.h>
+#include <linux/if.h>
 #include <linux/types.h>
 
 /* All of the structures in this file may not change size as they are
@@ -302,6 +303,7 @@ enum xfrm_attr_type_t {
 	XFRMA_SA_EXTRA_FLAGS,	/* __u32 */
 	XFRMA_PROTO,		/* __u8 */
 	XFRMA_ADDRESS_FILTER,	/* struct xfrm_address_filter */
+	XFRMA_OFFLOAD_DEV,	/* struct xfrm_state_offload */
 	__XFRMA_MAX
 
 #define XFRMA_MAX (__XFRMA_MAX - 1)
@@ -491,6 +493,11 @@ struct xfrm_address_filter {
 	__u16				family;
 	__u8				splen;
 	__u8				dplen;
+};
+
+struct xfrm_user_offload {
+	int				ifindex;
+	__u8				flags;
 };
 
 #ifndef __KERNEL__
