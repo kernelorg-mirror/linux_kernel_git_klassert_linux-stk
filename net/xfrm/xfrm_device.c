@@ -186,11 +186,25 @@ static int xfrm_dev_encap(struct sk_buff *skb)
 	return path->output(net, skb->sk, skb);
 }
 
+static int xfrm_dev_state_add(struct xfrm_state *x)
+{
+	printk("xfrm_dev_state_add: This function adds a SA to the NIC");
+
+	return 0;
+}
+
+static void xfrm_dev_state_delete(struct xfrm_state *x)
+{
+	printk("xfrm_dev_state_delete: This function delete a SA to the NIC");
+}
+
 static const struct xfrmdev_ops xfrmdev_soft_ops = {
-	.xdo_dev_encap	= xfrm_dev_encap,
-	.xdo_dev_prepare = xfrm_dev_prepare,
-	.xdo_dev_validate = xfrm_dev_validate,
-	.xdo_dev_resume = xfrm_dev_resume,
+	.xdo_dev_state_add	= xfrm_dev_state_add,
+	.xdo_dev_state_delete	= xfrm_dev_state_delete,
+	.xdo_dev_encap		= xfrm_dev_encap,
+	.xdo_dev_prepare 	= xfrm_dev_prepare,
+	.xdo_dev_validate 	= xfrm_dev_validate,
+	.xdo_dev_resume 	= xfrm_dev_resume,
 };
 
 static int xfrm_dev_register(struct net_device *dev)
