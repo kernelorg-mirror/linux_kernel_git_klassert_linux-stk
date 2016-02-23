@@ -209,9 +209,10 @@ static const struct xfrmdev_ops xfrmdev_soft_ops = {
 
 static int xfrm_dev_register(struct net_device *dev)
 {
-	if (dev->hw_features & NETIF_F_ESP_OFFLOAD)
+	if ((dev->features & NETIF_F_HW_ESP) || !(dev->features & NETIF_F_ESP))
 		goto out;
 
+	/* XXX Not needed for GSO if done before qdisc */
 	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
 
 	dev->xfrmdev_ops = &xfrmdev_soft_ops;
@@ -226,8 +227,8 @@ static int xfrm_dev_unregister(struct net_device *dev)
 
 static int xfrm_dev_feat_change(struct net_device *dev)
 {
-	if (!(dev->hw_features & NETIF_F_ESP_OFFLOAD) &&
-	    dev->features & NETIF_F_ESP_OFFLOAD)
+	if (!(dev->features & NETIF_F_HW_ESP) &&
+	    dev->features & NETIF_F_ESP)
 		dev->xfrmdev_ops = &xfrmdev_soft_ops;
 
 	return NOTIFY_DONE;
@@ -235,7 +236,7 @@ static int xfrm_dev_feat_change(struct net_device *dev)
 
 static int xfrm_dev_down(struct net_device *dev)
 {
-	if (dev->hw_features & NETIF_F_ESP_OFFLOAD)
+	if (dev->features & NETIF_F_HW_ESP)
 		xfrm_dev_state_flush(dev_net(dev), dev, true);
 
 	xfrm_garbage_collect(dev_net(dev));

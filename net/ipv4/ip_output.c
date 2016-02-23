@@ -268,10 +268,10 @@ static int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *sk
 	unsigned int mtu;
 
 #if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
+	netdev_features_t features = skb_dst(skb)->dev->features;
 	/* Policy lookup after SNAT yielded a new policy */
 	if (skb_dst(skb)->xfrm &&
-	    !((skb_dst(skb)->dev->features & NETIF_F_ESP_OFFLOAD) ||
-	      (skb_shinfo(skb)->gso_type & SKB_GSO_ESP))) {
+	    !(features & (NETIF_F_ESP | NETIF_F_HW_ESP))) {
 		IPCB(skb)->flags |= IPSKB_REROUTED;
 		return dst_output(net, sk, skb);
 	}

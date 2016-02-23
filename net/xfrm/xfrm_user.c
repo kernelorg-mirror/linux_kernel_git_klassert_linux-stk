@@ -434,7 +434,8 @@ static int xfrm_dev_state_add(struct net *net, struct xfrm_state *x, struct nlat
 		dst_release(dst);
 	}
 
-	if (!dev->xfrmdev_ops || !dev->xfrmdev_ops->xdo_dev_state_add) {
+	if (!(dev->features & NETIF_F_HW_ESP) || !dev->xfrmdev_ops ||
+	    !dev->xfrmdev_ops->xdo_dev_state_add) {
 		dev_put(dev);
 		return 0;
 	}

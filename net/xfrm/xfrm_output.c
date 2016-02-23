@@ -200,7 +200,7 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
 	struct net *net = dev_net(dev);
 	int err;
 
-	if (dev->features & NETIF_F_ESP_OFFLOAD) {
+	if (dev->features & (NETIF_F_ESP | NETIF_F_HW_ESP)) {
 		err = skb_dst(skb)->ops->local_out(net, skb->sk, skb);
 		if (unlikely(err != 1))
 			return err;
@@ -208,6 +208,7 @@ int xfrm_output(struct sock *sk, struct sk_buff *skb)
 		if (skb_is_gso(skb))
 			skb_shinfo(skb)->gso_type |= SKB_GSO_ESP;
 
+		/* Wrong if !GSO */
 		return dev->xfrmdev_ops->xdo_dev_encap(skb);
 	}
 
