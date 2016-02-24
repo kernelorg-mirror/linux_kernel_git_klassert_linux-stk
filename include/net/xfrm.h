@@ -388,6 +388,7 @@ struct xfrm_type {
 	void			(*destructor)(struct xfrm_state *);
 	int			(*input)(struct xfrm_state *, struct sk_buff *skb);
 	int			(*output)(struct xfrm_state *, struct sk_buff *pskb);
+	int			(*output_head)(struct xfrm_state *x, struct sk_buff *skb);
 	int			(*output_tail)(struct xfrm_state *x, struct sk_buff *skb);
 	void			(*encap)(struct xfrm_state *x, struct sk_buff *skb);
 	int			(*reject)(struct xfrm_state *, struct sk_buff *,
@@ -1516,7 +1517,6 @@ struct xfrmk_spdinfo {
 	u32 spdhmcnt;
 };
 
-void xfrm_dev_backlog(struct sk_buff_head *xfrm_backlog);
 struct xfrm_state *xfrm_find_acq_byseq(struct net *net, u32 mark, u32 seq);
 int xfrm_state_delete(struct xfrm_state *x);
 int xfrm_state_flush(struct net *net, u8 proto, bool task_valid);

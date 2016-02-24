@@ -2911,10 +2911,9 @@ static struct sk_buff *validate_xmit_vlan(struct sk_buff *skb,
 	return skb;
 }
 
-static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device *dev, int *ret)
+static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device *dev)
 {
 	netdev_features_t features;
-	int err = 0;
 
 	if (skb->next)
 		return skb;
@@ -2926,7 +2925,6 @@ static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device 
 
 	if (netif_needs_gso(skb, features)) {
 		struct sk_buff *segs;
-		struct sk_buff *skb2;
 
 		segs = skb_gso_segment(skb, features);
 		if (IS_ERR(segs)) {
@@ -2934,25 +2932,7 @@ static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device 
 		} else if (segs) {
 			consume_skb(skb);
 			skb = segs;
-
-			if  (skb->hw_xfrm) {
-				do {
-					skb2 = segs->next;
-					segs->next = NULL;
-
-					err = dev->xfrmdev_ops->xdo_dev_validate(segs);
-					if (!err)
-						segs->next = skb2;
-					else if (err != -EINPROGRESS)
-						kfree_skb(segs);
-					else if (skb == segs)
-						skb = skb2;
-
-					segs = skb2;
-				} while (segs);
-			}
 		}
-
 	} else {
 		if (skb_needs_linearize(skb, features) &&
 		    __skb_linearize(skb))
@@ -2975,9 +2955,6 @@ static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device 
 		}
 	}
 
-	if ((err == -EINPROGRESS) && !skb)
-		*ret = NETDEV_TX_OK;
-
 	return skb;
 
 out_kfree_skb:
@@ -2986,7 +2963,7 @@ out_null:
 	return NULL;
 }
 
-struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *dev, int *ret)
+struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *dev)
 {
 	struct sk_buff *next, *head = NULL, *tail;
 
@@ -2997,7 +2974,7 @@ struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *d
 		/* in case skb wont be segmented, point to itself */
 		skb->prev = skb;
 
-		skb = validate_xmit_skb(skb, dev, ret);
+		skb = validate_xmit_skb(skb, dev);
 		if (!skb)
 			continue;
 
@@ -3370,10 +3347,8 @@ static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
 			if (__this_cpu_read(xmit_recursion) > RECURSION_LIMIT)
 				goto recursion_alert;
 
-			skb = validate_xmit_skb(skb, dev, &rc);
-			if (!skb && rc == NETDEV_TX_OK)
-				goto out;
-			else if (!skb)
+			skb = validate_xmit_skb(skb, dev);
+			if (!skb)
 				goto drop;
 
 			HARD_TX_LOCK(dev, txq, cpu);
@@ -3412,14 +3387,66 @@ out:
 	return rc;
 }
 
+static int xfrm_queue_xmit(struct sk_buff *skb, void *accel_priv)
+{
+	int err = 0;
+	struct sk_buff *segs, *nskb;
+	netdev_features_t features;
+	struct net_device *dev = skb->dev;
+
+	features = netif_skb_features(skb);
+
+	segs = validate_xmit_skb(skb, dev);
+	if (!segs)
+		return -ENOMEM;
+
+	skb = segs;
+
+	if (!(features & NETIF_F_HW_ESP)) {
+		do {
+			nskb = segs->next;
+			segs->next = NULL;
+
+			err = dev->xfrmdev_ops->xdo_dev_validate(segs);
+			if (!err)
+				segs->next = nskb;
+			else if (err != -EINPROGRESS)
+				kfree_skb(segs);
+			else if (skb == segs)
+				skb = nskb;
+
+			segs = nskb;
+		} while (segs);
+	}
+
+	while (skb) {
+		nskb = skb->next;
+		skb->next = NULL;
+
+		err = __dev_queue_xmit(skb, accel_priv);
+		if (err)
+			kfree_skb_list(nskb);
+
+		skb = nskb;
+	}
+
+	return err;
+}
+
 int dev_queue_xmit(struct sk_buff *skb)
 {
+	if (skb_dst(skb) && skb_dst(skb)->xfrm && skb_is_gso(skb))
+		return xfrm_queue_xmit(skb, NULL);
+
 	return __dev_queue_xmit(skb, NULL);
 }
 EXPORT_SYMBOL(dev_queue_xmit);
 
 int dev_queue_xmit_accel(struct sk_buff *skb, void *accel_priv)
 {
+	if (skb_dst(skb) && skb_dst(skb)->xfrm && skb_is_gso(skb))
+		return xfrm_queue_xmit(skb, accel_priv);
+
 	return __dev_queue_xmit(skb, accel_priv);
 }
 EXPORT_SYMBOL(dev_queue_xmit_accel);
@@ -3892,11 +3919,6 @@ static void net_tx_action(struct softirq_action *h)
 			}
 		}
 	}
-
-#ifdef CONFIG_XFRM
-	if (!skb_queue_empty(&sd->xfrm_backlog))
-			xfrm_dev_backlog(&sd->xfrm_backlog);
-#endif
 }
 
 #if (defined(CONFIG_BRIDGE) || defined(CONFIG_BRIDGE_MODULE)) && \

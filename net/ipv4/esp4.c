@@ -136,6 +136,9 @@ static void esp4_gso_encap(struct xfrm_state *x, struct sk_buff *skb)
 	struct iphdr *iph = ip_hdr(skb);
 	int proto = iph->protocol;
 
+	if (!skb_is_gso(skb))
+		return;
+
 	skb_push(skb, -skb_network_offset(skb));
 	esph = ip_esp_hdr(skb);
 	*skb_mac_header(skb) = IPPROTO_ESP;
@@ -193,7 +196,7 @@ error:
 	return err;
 }
 
-static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
+static int esp_output_head(struct xfrm_state *x, struct sk_buff *skb)
 {
 	int err = -ENOMEM;
 	struct ip_esp_hdr *esph;
@@ -249,8 +252,7 @@ static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
 	if (!(skb_shinfo(skb)->tx_flags & SKBTX_SHARED_FRAG) && !skb_cloned(skb)) {
 		if (tfclen + plen + alen <= skb_availroom(skb)) {
 			nfrags = 1;
-			trailer = skb;
-			tail = skb_tail_pointer(trailer);
+			tail = skb_tail_pointer(skb);
 
 			/* Fill padding... */
 			if (tfclen) {
@@ -263,12 +265,9 @@ static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
 					tail[i] = i + 1;
 			} while (0);
 			tail[plen - 2] = plen - 2;
-			if (!skb->hw_xfrm)
-				tail[plen - 1] = *skb_mac_header(skb);
-			else
-				tail[plen - 1] = proto;
+			tail[plen - 1] = proto;
 
-			pskb_put(skb, trailer, clen - skb->len + alen);
+			skb_put(skb, clen - skb->len + alen);
 
 			goto skip_cow;
 
@@ -305,10 +304,7 @@ static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
 					tail[i] = i + 1;
 			} while (0);
 			tail[plen - 2] = plen - 2;
-			if (!skb->hw_xfrm)
-				tail[plen - 1] = *skb_mac_header(skb);
-			else
-				tail[plen - 1] = proto;
+			tail[plen - 1] = proto;
 
 			kunmap_atomic(vaddr);
 
@@ -350,10 +346,7 @@ cow:
 			tail[i] = i + 1;
 	} while (0);
 	tail[plen - 2] = plen - 2;
-	if (!skb->hw_xfrm)
-		tail[plen - 1] = *skb_mac_header(skb);
-	else
-		tail[plen - 1] = proto;
+	tail[plen - 1] = proto;
 
 	pskb_put(skb, trailer, clen - skb->len + alen);
 
@@ -373,8 +366,172 @@ skip_cow:
 	skb_push(skb, -skb_network_offset(skb));
 	esph = ip_esp_hdr(skb);
 
-	if (!skb->hw_xfrm)
+	if (!(skb_dst(skb)->dev->features & (NETIF_F_ESP | NETIF_F_HW_ESP)))
 		*skb_mac_header(skb) = IPPROTO_ESP;
+
+	/* this is non-NULL only with UDP Encapsulation */
+	if (x->encap) {
+		struct xfrm_encap_tmpl *encap = x->encap;
+		struct udphdr *uh;
+		__be32 *udpdata32;
+		__be16 sport, dport;
+		int encap_type;
+
+		spin_lock_bh(&x->lock);
+		sport = encap->encap_sport;
+		dport = encap->encap_dport;
+		encap_type = encap->encap_type;
+		spin_unlock_bh(&x->lock);
+
+		uh = (struct udphdr *)esph;
+		uh->source = sport;
+		uh->dest = dport;
+		uh->len = htons(skb->len - skb_transport_offset(skb));
+		uh->check = 0;
+
+		switch (encap_type) {
+		default:
+		case UDP_ENCAP_ESPINUDP:
+			esph = (struct ip_esp_hdr *)(uh + 1);
+			break;
+		case UDP_ENCAP_ESPINUDP_NON_IKE:
+			udpdata32 = (__be32 *)(uh + 1);
+			udpdata32[0] = udpdata32[1] = 0;
+			esph = (struct ip_esp_hdr *)(udpdata32 + 2);
+			break;
+		}
+
+		/* FIXME: Wrong on ESP offload! */
+		*skb_mac_header(skb) = IPPROTO_UDP;
+	}
+
+	esph->seq_no = htonl(XFRM_SKB_CB(skb)->seq.output.low);
+
+	aead_request_set_callback(req, 0, esp_output_done, skb);
+
+	/* For ESN we move the header forward by 4 bytes to
+	 * accomodate the high bits.  We will move it back after
+	 * encryption.
+	 */
+	if ((x->props.flags & XFRM_STATE_ESN)) {
+		esph = (void *)(skb_transport_header(skb) - sizeof(__be32));
+		*seqhi = esph->spi;
+		esph->seq_no = htonl(XFRM_SKB_CB(skb)->seq.output.hi);
+		aead_request_set_callback(req, 0, esp_output_done_esn, skb);
+	}
+
+	esph->spi = x->id.spi;
+
+	sg_init_table(sg, nfrags);
+	skb_to_sgvec(skb, sg,
+		     (unsigned char *)esph - skb->data,
+		     assoclen + ivlen + clen + alen);
+
+	aead_request_set_crypt(req, sg, sg, ivlen + clen, iv);
+	aead_request_set_ad(req, assoclen);
+
+	seqno = cpu_to_be64(XFRM_SKB_CB(skb)->seq.output.low +
+			    ((u64)XFRM_SKB_CB(skb)->seq.output.hi << 32));
+
+	memset(iv, 0, ivlen);
+	memcpy(iv + ivlen - min(ivlen, 8), (u8 *)&seqno + 8 - min(ivlen, 8),
+	       min(ivlen, 8));
+
+	ESP_SKB_CB(skb)->tmp = tmp;
+
+	if (skb_dst(skb)->dev->features & NETIF_F_HW_ESP)
+		kfree(tmp);
+
+	return 0;
+
+error:
+	return err;
+}
+
+static int esp_output(struct xfrm_state *x, struct sk_buff *skb)
+{
+	int err;
+	struct ip_esp_hdr *esph;
+	struct crypto_aead *aead;
+	struct aead_request *req;
+	struct scatterlist *sg;
+	struct sk_buff *trailer;
+	void *tmp;
+	u8 *iv;
+	u8 *tail;
+	int blksize;
+	int clen;
+	int alen;
+	int plen;
+	int ivlen;
+	int tfclen;
+	int nfrags;
+	int assoclen;
+	int seqhilen;
+	__be32 *seqhi;
+	__be64 seqno;
+
+	/* skb is pure payload to encrypt */
+
+	aead = x->data;
+	alen = crypto_aead_authsize(aead);
+	ivlen = crypto_aead_ivsize(aead);
+
+	tfclen = 0;
+	if (x->tfcpad) {
+		struct xfrm_dst *dst = (struct xfrm_dst *)skb_dst(skb);
+		u32 padto;
+
+		padto = min(x->tfcpad, esp4_get_mtu(x, dst->child_mtu_cached));
+		if (skb->len < padto)
+			tfclen = padto - skb->len;
+	}
+	blksize = ALIGN(crypto_aead_blocksize(aead), 4);
+	clen = ALIGN(skb->len + 2 + tfclen, blksize);
+	plen = clen - skb->len - tfclen;
+
+	err = skb_cow_data(skb, tfclen + plen + alen, &trailer);
+	if (err < 0)
+		goto error;
+	nfrags = err;
+
+	assoclen = sizeof(*esph);
+	seqhilen = 0;
+
+	if (x->props.flags & XFRM_STATE_ESN) {
+		seqhilen += sizeof(__be32);
+		assoclen += seqhilen;
+	}
+
+	tmp = esp_alloc_tmp(aead, nfrags, seqhilen);
+	if (!tmp) {
+		err = -ENOMEM;
+		goto error;
+	}
+
+	seqhi = esp_tmp_seqhi(tmp);
+	iv = esp_tmp_iv(aead, tmp, seqhilen);
+	req = esp_tmp_req(aead, iv);
+	sg = esp_req_sg(aead, req);
+
+	/* Fill padding... */
+	tail = skb_tail_pointer(trailer);
+	if (tfclen) {
+		memset(tail, 0, tfclen);
+		tail += tfclen;
+	}
+	do {
+		int i;
+		for (i = 0; i < plen - 2; i++)
+			tail[i] = i + 1;
+	} while (0);
+	tail[plen - 2] = plen - 2;
+	tail[plen - 1] = *skb_mac_header(skb);
+	pskb_put(skb, trailer, clen - skb->len + alen);
+
+	skb_push(skb, -skb_network_offset(skb));
+	esph = ip_esp_hdr(skb);
+	*skb_mac_header(skb) = IPPROTO_ESP;
 
 	/* this is non-NULL only with UDP Encapsulation */
 	if (x->encap) {
@@ -444,10 +601,6 @@ skip_cow:
 	       min(ivlen, 8));
 
 	ESP_SKB_CB(skb)->tmp = tmp;
-
-	if (skb->hw_xfrm)
-		return 0;
-
 	err = crypto_aead_encrypt(req);
 
 	switch (err) {
@@ -468,6 +621,8 @@ skip_cow:
 error:
 	return err;
 }
+
+
 
 static int esp_input_done2(struct sk_buff *skb, int err)
 {
@@ -913,6 +1068,7 @@ static const struct xfrm_type esp_type =
 	.get_mtu	= esp4_get_mtu,
 	.input		= esp_input,
 	.output		= esp_output,
+	.output_head	= esp_output_head,
 	.output_tail	= esp_output_tail,
 	.encap		= esp4_gso_encap,
 };

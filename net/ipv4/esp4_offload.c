@@ -94,7 +94,7 @@ static struct sk_buff *esp4_gso_segment(struct sk_buff *skb,
 
 	skb->encap_hdr_csum = 1;
 
-	if (proto == IPPROTO_IPIP) {
+	if (x->props.mode == XFRM_MODE_TUNNEL) {
 		__skb_push(skb, skb->mac_len);
 		segs = skb_mac_gso_segment(skb, features);
 	} else {
@@ -113,7 +113,7 @@ static struct sk_buff *esp4_gso_segment(struct sk_buff *skb,
 	do {
 		struct sk_buff *nskb = skb2->next;
 
-		if (proto == IPPROTO_IPIP) {
+		if (x->props.mode == XFRM_MODE_TUNNEL) {
 			skb2->network_header = skb2->network_header - x->props.header_len;
 			skb2->transport_header = skb2->network_header + sizeof(struct iphdr);
 			skb_reset_mac_len(skb2);

@@ -24,57 +24,54 @@
 
 static void xfrm_dev_resume(struct sk_buff *skb, int err)
 {
-	int ret = NETDEV_TX_BUSY;
-	unsigned long flags;
-	struct netdev_queue *txq;
-	struct softnet_data *sd;
-	struct xfrm_state *x = skb_dst(skb)->xfrm;
-	struct net_device *dev = skb->dev;
+	struct dst_entry *dst;
+	struct net *net = xs_net(skb_dst(skb)->xfrm);
 
 	if (err) {
-		XFRM_INC_STATS(xs_net(x), LINUX_MIB_XFRMOUTSTATEPROTOERROR);
+		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEPROTOERROR);
+		kfree_skb(skb);
+
 		return;
 	}
 
-	txq = netdev_pick_tx(dev, skb, NULL);
+	dst = skb_dst_pop(skb);
+	if (!dst || dst->xfrm) {
+		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+		kfree_skb(skb);
 
-	HARD_TX_LOCK(dev, txq, smp_processor_id());
-	if (!netif_xmit_frozen_or_stopped(txq))
-		skb = dev_hard_start_xmit(skb, dev, txq, &ret);
-	HARD_TX_UNLOCK(dev, txq);
-
-	if (!dev_xmit_complete(ret)) {
-		local_irq_save(flags);
-		sd = this_cpu_ptr(&softnet_data);
-		skb_queue_tail(&sd->xfrm_backlog, skb);
-		raise_softirq_irqoff(NET_TX_SOFTIRQ);
-		local_irq_restore(flags);
-	}
-}
-
-void xfrm_dev_backlog(struct sk_buff_head *xfrm_backlog)
-{
-	struct sk_buff *skb;
-	struct sk_buff_head list;
-
-	__skb_queue_head_init(&list);
-
-	spin_lock(&xfrm_backlog->lock);
-	skb_queue_splice_init(xfrm_backlog, &list);
-	spin_unlock(&xfrm_backlog->lock);
-
-	while (!skb_queue_empty(&list)) {
-		skb = __skb_dequeue(&list);
-		xfrm_dev_resume(skb, 0);
+		return;
 	}
 
+	skb_dst_set(skb, dst);
+
+	dev_queue_xmit(skb);
 }
 
 static int xfrm_dev_validate(struct sk_buff *skb)
 {
+	int err;
+	struct dst_entry *dst;
 	struct xfrm_state *x = skb_dst(skb)->xfrm;
+	struct net *net = xs_net(x);
 
-	return x->type->output_tail(x, skb);
+	err = x->type->output_tail(x, skb);
+	if (err == -EINPROGRESS)
+		return err;
+
+	if (err) {
+		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+		return -EHOSTUNREACH;
+	}
+
+	dst = skb_dst_pop(skb);
+	if (!dst || dst->xfrm) {
+		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+		return -EHOSTUNREACH;
+	}
+
+	skb_dst_set(skb, dst);
+
+	return err;
 }
 
 static int xfrm_skb_check_space(struct sk_buff *skb, struct dst_entry *dst)
@@ -131,12 +128,7 @@ static int xfrm_dev_prepare(struct sk_buff *skb)
 
 		skb_dst_force(skb);
 
-		skb->hw_xfrm = 1;
-
-		err = x->type->output(x, skb);
-		if (err == -EINPROGRESS)
-			goto out;
-
+		err = x->type->output_head(x, skb);
 		if (err) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEPROTOERROR);
 			goto error_nolock;
@@ -157,7 +149,6 @@ error:
 	spin_unlock_bh(&x->lock);
 error_nolock:
 	kfree_skb(skb);
-out:
 	return err;
 }
 
@@ -165,25 +156,28 @@ static int xfrm_dev_encap(struct sk_buff *skb)
 {
 	int err;
 	struct dst_entry *dst = skb_dst(skb);
-	struct dst_entry *path = dst->path;
+//	struct dst_entry *path = dst->path;
 	struct xfrm_state *x = dst->xfrm;
 	struct net *net = xs_net(x);
 
 	err = xfrm_skb_check_space(skb, dst);
 	if (err) {
 		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+		kfree_skb(skb);
 		return err;
 	}
 
 	err = x->outer_mode->output(x, skb);
 	if (err) {
 		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEMODEERROR);
+		kfree_skb(skb);
 		return err;
 	}
 
 	x->type->encap(x, skb);
 
-	return path->output(net, skb->sk, skb);
+	return err;
+//	return path->output(net, skb->sk, skb);
 }
 
 static int xfrm_dev_state_add(struct xfrm_state *x)
