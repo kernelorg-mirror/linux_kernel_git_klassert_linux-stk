@@ -75,6 +75,7 @@ static struct sk_buff *esp4_gso_segment(struct sk_buff *skb,
 	int err = 0;
 	const struct net_offload *ops;
 	int proto;
+	int omaclen;
 
 	if (!dst || !dst->xfrm)
 		goto out;
@@ -83,6 +84,7 @@ static struct sk_buff *esp4_gso_segment(struct sk_buff *skb,
 	aead = x->data;
 	esph = ip_esp_hdr(skb);
 
+	omaclen = skb->mac_len;
 	proto = esph->seq_no;
 	if (esph->spi != x->id.spi)
 		goto out;
@@ -120,12 +122,28 @@ static struct sk_buff *esp4_gso_segment(struct sk_buff *skb,
 			skb_pull(skb2, skb2->mac_len + x->props.header_len);
 		} else {
 			/* skb2 mac and data are pointing at the start of
-			 * mac address. Pull data forward to point to tcp hdr
+			 * mac address. Pull data forward to point to IP
+			 * payload past ESP header (i.e., transport data
+			 * that needs to be encrypted).
+			 * When IPsec transport mode is stacked with a tunnel,
+			 * the skb2->data needs to point at the inner IP
+			 * header for tunnelled packets. After ->gso_segment,
+			 * the skb2 wil have the network/ip header pointing
+			 * at the inner IP header, and the transport_header
+			 * will be pointing at the inner IP payload. Thus we
+			 * need to use omaclen and the outer iphdr length to
+			 * make sure that pointers are set up correctly in
+			 * every case.
 			 */
-			 __skb_pull(skb2, skb2->transport_header - skb2->mac_header);
+			struct iphdr *oiph =
+				(struct iphdr *)(skb2->data + omaclen);
+			int ihl = oiph->ihl * 4;
 
-			 /* move transport_header to point to esp header */
-			 skb2->transport_header -= x->props.header_len;
+			 __skb_pull(skb2, omaclen + ihl + x->props.header_len);
+
+			/* move ->transport_header to point to esp header */
+			skb_reset_transport_header(skb2);
+			skb2->transport_header -= x->props.header_len;
 		}
 
 		/* Set up eshp->seq_no to be used by esp_output()
