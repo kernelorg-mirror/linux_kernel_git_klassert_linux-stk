@@ -223,7 +223,6 @@ static int esp_output_head(struct xfrm_state *x, struct sk_buff *skb, __u8 proto
 	u8 *vaddr;
 	int nfrags;
 
-	*skb_mac_header(skb) = IPPROTO_ESP;
 	esph = ip_esp_hdr(skb);
 
 	/* this is non-NULL only with UDP Encapsulation */
@@ -1054,6 +1053,7 @@ static const struct xfrm_type esp_type =
 	.input		= esp_input,
 	.output		= esp_output,
 	.xmit		= esp_xmit,
+	.encap		= esp4_gso_encap,
 };
 
 static struct xfrm4_protocol esp4_protocol = {

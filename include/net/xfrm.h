@@ -372,6 +372,7 @@ struct xfrm_type {
 	int			(*init_state)(struct xfrm_state *x);
 	void			(*destructor)(struct xfrm_state *);
 	int			(*input)(struct xfrm_state *, struct sk_buff *skb);
+	void			(*encap)(struct xfrm_state *, struct sk_buff *pskb);
 	int			(*output)(struct xfrm_state *, struct sk_buff *pskb);
 	int			(*xmit)(struct xfrm_state *, struct sk_buff *pskb, netdev_features_t features);
 	int			(*reject)(struct xfrm_state *, struct sk_buff *,

@@ -213,6 +213,23 @@ static void esp_output_fill_trailer(u8 *tail, int tfclen, int plen, __u8 proto)
 	tail[plen - 1] = proto;
 }
 
+static void esp6_gso_encap(struct xfrm_state *x, struct sk_buff *skb)
+{
+	struct ip_esp_hdr *esph;
+	struct ipv6hdr *iph = ipv6_hdr(skb);
+	struct xfrm_offload *xo = xfrm_offload(skb);
+	int proto = iph->nexthdr;
+
+	skb_push(skb, -skb_network_offset(skb));
+	esph = ip_esp_hdr(skb);
+	*skb_mac_header(skb) = IPPROTO_ESP;
+
+	esph->spi = x->id.spi;
+	esph->seq_no = htonl(XFRM_SKB_CB(skb)->seq.output.low);
+
+	xo->proto = proto;
+}
+
 static int esp6_output_head(struct xfrm_state *x, struct sk_buff *skb, __u8 proto, int tfclen, int tailen, int plen, bool *inplace)
 {
 	struct ip_esp_hdr *esph;
@@ -222,7 +239,6 @@ static int esp6_output_head(struct xfrm_state *x, struct sk_buff *skb, __u8 prot
 	u8 *vaddr;
 	int nfrags;
 
-	*skb_mac_header(skb) = IPPROTO_ESP;
 	esph = ip_esp_hdr(skb);
 
 	if (!skb_cloned(skb)) {
@@ -967,6 +983,7 @@ static const struct xfrm_type esp6_type = {
 	.input		= esp6_input,
 	.output		= esp6_output,
 	.xmit		= esp6_xmit,
+	.encap		= esp6_gso_encap,
 	.hdr_offset	= xfrm6_find_1stfragopt,
 };
 
