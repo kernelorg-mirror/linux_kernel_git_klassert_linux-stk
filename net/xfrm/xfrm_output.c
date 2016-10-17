@@ -206,8 +206,9 @@ static bool xfrm_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
 	struct xfrm_dst *xdst = (struct xfrm_dst *)dst;
 	struct net_device *dev = x->xso.dev;
 
-	if (x->xso.offload_handle && (dev == dst->path->dev)
-	    && !dst->child->xfrm && x->type->get_mtu) {
+	if (((x->xso.offload_handle && (dev == dst->path->dev)) ||
+	    (dst->flags & DST_XFRM_SYNC)) &&
+	     !dst->child->xfrm && x->type->get_mtu) {
 		mtu = x->type->get_mtu(x, xdst->child_mtu_cached);
 
 		if (skb->len <= mtu)
@@ -216,6 +217,7 @@ static bool xfrm_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
 		if (skb_is_gso(skb) && skb_gso_validate_mtu(skb, mtu))
 			goto ok;
 	}
+
 	return false;
 
 ok:
