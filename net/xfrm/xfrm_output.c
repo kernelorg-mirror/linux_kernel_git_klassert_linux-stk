@@ -276,6 +276,30 @@ out:
 }
 EXPORT_SYMBOL_GPL(xfrm_output);
 
+int validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features)
+{
+	int err;
+	struct xfrm_state *x;
+	struct xfrm_offload *xo = xfrm_offload(skb);
+
+	if (xo) {
+		x = skb->sp->xvec[skb->sp->len - 1];
+
+		skb_pull(skb, skb->mac_len + x->props.header_len);
+
+		err = x->type->xmit(x, skb, features);
+		if (err) {
+			XFRM_INC_STATS(xs_net(x), LINUX_MIB_XFRMOUTSTATEPROTOERROR);
+			return err;
+		}
+
+		skb_push(skb, skb->data - skb_mac_header(skb));
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(validate_xmit_xfrm);
+
 int xfrm_inner_extract_output(struct xfrm_state *x, struct sk_buff *skb)
 {
 	struct xfrm_mode *inner_mode;

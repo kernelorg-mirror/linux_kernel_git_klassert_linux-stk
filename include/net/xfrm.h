@@ -1837,6 +1837,15 @@ static inline struct xfrm_offload *xfrm_offload(struct sk_buff *skb)
 }
 #endif
 
+#ifdef CONFIG_XFRM_OFFLOAD
+int validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features);
+#else
+static inline int validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features)
+{
+	return 0;
+}
+#endif
+
 static inline int xfrm_mark_get(struct nlattr **attrs, struct xfrm_mark *m)
 {
 	if (attrs[XFRMA_MARK])
