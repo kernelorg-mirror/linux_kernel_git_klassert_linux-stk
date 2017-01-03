@@ -606,11 +606,25 @@ struct xfrm_mgr {
 int xfrm_register_km(struct xfrm_mgr *km);
 int xfrm_unregister_km(struct xfrm_mgr *km);
 
-struct xfrm_tunnel_skb_cb {
+/*
+ * This structure is used if we get the packet from the gro layer.
+ */
+struct xfrm_gro_skb_cb {
 	union {
 		struct inet_skb_parm h4;
 		struct inet6_skb_parm h6;
-	} header;
+
+		struct {
+			__be32 seq;
+			bool skb_is_gro;
+		} input;
+	} gro;
+};
+
+#define XFRM_GRO_SKB_CB(__skb) ((struct xfrm_gro_skb_cb *)&((__skb)->cb[0]))
+
+struct xfrm_tunnel_skb_cb {
+	struct xfrm_gro_skb_cb header;
 
 	union {
 		struct ip_tunnel *ip4;
