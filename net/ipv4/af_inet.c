@@ -1406,8 +1406,21 @@ struct sk_buff **inet_gro_receive(struct sk_buff **head, struct sk_buff *skb)
 			NAPI_GRO_CB(p)->flush_id = flush_id;
 		else
 			NAPI_GRO_CB(p)->flush_id |= flush_id;
+
+		goto found;
 	}
 
+	/* XXX: We need some condition to enable/disable this! */
+	skb_pull(skb, hlen);
+	if (ip_route_input_noref(skb, iph->daddr, iph->saddr, iph->tos,
+				 skb->dev)) {
+		skb_push(skb, hlen);
+		goto out_unlock;
+	}
+
+	skb_push(skb, hlen);
+
+found:
 	NAPI_GRO_CB(skb)->is_atomic = !!(iph->frag_off & htons(IP_DF));
 	NAPI_GRO_CB(skb)->flush |= flush;
 	skb_set_network_header(skb, off);
