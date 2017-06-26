@@ -3217,6 +3217,9 @@ struct sk_buff *skb_segment(struct sk_buff *head_skb,
 	if (unlikely(!proto))
 		return ERR_PTR(-EINVAL);
 
+	if (skb_shinfo(head_skb)->gso_type & SKB_GSO_UDP_BYFRAGS)
+		return skb_segment_fraglist(head_skb, doffset);
+
 	sg = !!(features & NETIF_F_SG);
 	csum = !!can_checksum_protocol(features, proto);
 

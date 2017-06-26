@@ -496,6 +496,8 @@ enum {
 	SKB_GSO_SCTP = 1 << 15,
 
 	SKB_GSO_ESP = 1 << 16,
+
+	SKB_GSO_UDP_BYFRAGS = 1 << 17,
 };
 
 #if BITS_PER_LONG > 32
