@@ -1736,6 +1736,7 @@ rt_cache:
 		rth->rt_table_id = res->table->tb_id;
 	RT_CACHE_STAT_INC(in_slow_tot);
 
+	rth->dst.flags |= DST_FFWD;
 	rth->dst.input = ip_forward;
 
 	rt_set_nexthop(rth, daddr, res, fnhe, res->fi, res->type, itag,

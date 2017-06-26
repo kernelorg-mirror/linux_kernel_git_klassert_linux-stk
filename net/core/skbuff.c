@@ -3511,6 +3511,9 @@ int skb_gro_receive(struct sk_buff **head, struct sk_buff *skb)
 	lp = NAPI_GRO_CB(p)->last;
 	pinfo = skb_shinfo(lp);
 
+	if (NAPI_GRO_CB(skb)->is_ffwd)
+		goto merge;
+
 	if (headlen <= offset) {
 		skb_frag_t *frag;
 		skb_frag_t *frag2;

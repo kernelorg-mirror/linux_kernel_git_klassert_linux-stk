@@ -56,6 +56,7 @@ struct dst_entry {
 #define DST_XFRM_TUNNEL		0x0020
 #define DST_XFRM_QUEUE		0x0040
 #define DST_METADATA		0x0080
+#define DST_FFWD		0x0100
 
 	short			error;
 

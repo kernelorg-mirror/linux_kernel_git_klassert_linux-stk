@@ -1407,6 +1407,7 @@ struct sk_buff **inet_gro_receive(struct sk_buff **head, struct sk_buff *skb)
 		else
 			NAPI_GRO_CB(p)->flush_id |= flush_id;
 
+		NAPI_GRO_CB(skb)->is_ffwd = NAPI_GRO_CB(p)->is_ffwd;
 		goto found;
 	}
 
@@ -1418,6 +1419,8 @@ struct sk_buff **inet_gro_receive(struct sk_buff **head, struct sk_buff *skb)
 		goto out_unlock;
 	}
 
+	if (skb_dst(skb)->flags & DST_FFWD)
+		NAPI_GRO_CB(skb)->is_ffwd = 1;
 	skb_push(skb, hlen);
 
 found:
