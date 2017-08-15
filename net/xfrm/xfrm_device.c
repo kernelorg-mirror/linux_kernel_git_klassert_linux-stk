@@ -23,12 +23,13 @@
 #include <linux/notifier.h>
 
 #ifdef CONFIG_XFRM_OFFLOAD
-struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features)
+struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features, int *ret)
 {
 	int err;
-	__u32 seq;
+	unsigned long flags;
 	struct xfrm_state *x;
 	struct sk_buff *skb2;
+	struct softnet_data *sd;
 	netdev_features_t esp_features = features;
 	struct xfrm_offload *xo = xfrm_offload(skb);
 
@@ -42,6 +43,21 @@ struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t featur
 	if (xo->flags & XFRM_GRO || x->xso.flags & XFRM_OFFLOAD_INBOUND)
 		return skb;
 
+	err = 0;
+
+	*ret = NETDEV_TX_OK;
+
+	local_irq_save(flags);
+	sd = this_cpu_ptr(&softnet_data);
+	if (!skb_queue_empty(&sd->xfrm_backlog))
+		err = -EBUSY;
+	local_irq_restore(flags);
+
+	if (err) {
+		*ret = NETDEV_TX_AGAIN;
+		return skb;
+	}
+
 	if (skb_is_gso(skb)) {
 		struct net_device *dev = skb->dev;
 
@@ -54,23 +70,26 @@ struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t featur
 
 			segs = skb_gso_segment(skb, esp_features);
 			if (IS_ERR(segs)) {
-				XFRM_INC_STATS(xs_net(x), LINUX_MIB_XFRMOUTSTATEPROTOERROR);
 				kfree_skb(skb);
+				atomic_long_inc(&dev->tx_dropped);
 				return NULL;
 			} else {
 				consume_skb(skb);
 				skb = segs;
 			}
-		} else {
-			return skb;
 		}
 	}
 
 	if (!skb->next) {
 		x->outer_mode->xmit(x, skb);
 
+		xo->flags |= XFRM_DEV_RESUME;
+
 		err = x->type_offload->xmit(x, skb, esp_features);
 		if (err) {
+			if (err == -EINPROGRESS)
+				return NULL;
+
 			XFRM_INC_STATS(xs_net(x), LINUX_MIB_XFRMOUTSTATEPROTOERROR);
 			kfree_skb(skb);
 			return NULL;
@@ -82,36 +101,37 @@ struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t featur
 	}
 
 	skb2 = skb;
-	seq = xo->seq.low;
 
 	do {
 		struct sk_buff *nskb = skb2->next;
+		skb2->next = NULL;
 
 		xo = xfrm_offload(skb2);
-		xo->flags |= XFRM_GSO_SEGMENT;
-		xo->seq.low = seq;
-		xo->seq.hi = xfrm_replay_seqhi(x, seq);
-
-		if(!(features & NETIF_F_HW_ESP))
-			xo->flags |= CRYPTO_FALLBACK;
+		xo->flags |= XFRM_DEV_RESUME;
 
 		x->outer_mode->xmit(x, skb2);
 
 		err = x->type_offload->xmit(x, skb2, esp_features);
-		if (err) {
+		if (!err) {
+			skb2->next = nskb;
+		} else if (err != -EINPROGRESS) {
 			XFRM_INC_STATS(xs_net(x), LINUX_MIB_XFRMOUTSTATEPROTOERROR);
 			skb2->next = nskb;
 			kfree_skb_list(skb2);
 			return NULL;
-		}
+		} else {
+			if (skb == skb2)
+				skb = nskb;
 
-		if (!skb_is_gso(skb2))
-			seq++;
-		else
-			seq += skb_shinfo(skb2)->gso_segs;
+			if (!skb)
+				return NULL;
+
+			goto skip_push;
+		}
 
 		skb_push(skb2, skb2->data - skb_mac_header(skb2));
 
+skip_push:
 		skb2 = nskb;
 	} while (skb2);
 
@@ -207,6 +227,55 @@ ok:
 	return true;
 }
 EXPORT_SYMBOL_GPL(xfrm_dev_offload_ok);
+
+void xfrm_dev_resume(struct sk_buff *skb)
+{
+	int ret = NETDEV_TX_BUSY;
+	unsigned long flags;
+	struct netdev_queue *txq;
+	struct softnet_data *sd;
+	struct net_device *dev = skb->dev;
+
+	rcu_read_lock();
+	txq = netdev_pick_tx(dev, skb, NULL);
+
+	HARD_TX_LOCK(dev, txq, smp_processor_id());
+	if (!netif_xmit_frozen_or_stopped(txq))
+		skb = dev_hard_start_xmit(skb, dev, txq, &ret);
+	HARD_TX_UNLOCK(dev, txq);
+
+	if (!dev_xmit_complete(ret)) {
+		local_irq_save(flags);
+		sd = this_cpu_ptr(&softnet_data);
+		skb_queue_tail(&sd->xfrm_backlog, skb);
+		raise_softirq_irqoff(NET_TX_SOFTIRQ);
+		local_irq_restore(flags);
+	}
+	rcu_read_unlock();
+}
+EXPORT_SYMBOL_GPL(xfrm_dev_resume);
+
+void xfrm_dev_backlog(struct softnet_data *sd)
+{
+	struct sk_buff *skb;
+	struct sk_buff_head list;
+	struct sk_buff_head *xfrm_backlog = &sd->xfrm_backlog;
+
+	if (skb_queue_empty(xfrm_backlog))
+		return;
+
+	__skb_queue_head_init(&list);
+
+	spin_lock(&xfrm_backlog->lock);
+	skb_queue_splice_init(xfrm_backlog, &list);
+	spin_unlock(&xfrm_backlog->lock);
+
+	while (!skb_queue_empty(&list)) {
+		skb = __skb_dequeue(&list);
+		xfrm_dev_resume(skb);
+	}
+
+}
 #endif
 
 static int xfrm_dev_register(struct net_device *dev)

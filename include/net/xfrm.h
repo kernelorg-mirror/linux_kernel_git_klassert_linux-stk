@@ -1020,6 +1020,7 @@ struct xfrm_offload {
 #define	XFRM_GSO_SEGMENT	16
 #define	XFRM_GRO		32
 #define	XFRM_ESP_NO_TRAILER	64
+#define	XFRM_DEV_RESUME		128
 
 	__u32			status;
 #define CRYPTO_SUCCESS				1
@@ -1857,7 +1858,9 @@ static inline struct xfrm_offload *xfrm_offload(struct sk_buff *skb)
 void __net_init xfrm_dev_init(void);
 
 #ifdef CONFIG_XFRM_OFFLOAD
-struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features);
+void xfrm_dev_resume(struct sk_buff *skb);
+void xfrm_dev_backlog(struct softnet_data *sd);
+struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features, int *ret);
 int xfrm_dev_state_add(struct net *net, struct xfrm_state *x,
 		       struct xfrm_user_offload *xuo);
 bool xfrm_dev_offload_ok(struct sk_buff *skb, struct xfrm_state *x);
@@ -1896,7 +1899,15 @@ static inline void xfrm_dev_state_free(struct xfrm_state *x)
 	}
 }
 #else
-static inline struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features)
+static inline void xfrm_dev_resume(struct sk_buff *skb)
+{
+}
+
+static inline void xfrm_dev_backlog(struct softnet_data *sd)
+{
+}
+
+static inline struct sk_buff *validate_xmit_xfrm(struct sk_buff *skb, netdev_features_t features, int *ret)
 {
 	return skb;
 }
