@@ -587,6 +587,9 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 	if (attrs[XFRMA_OUTPUT_MARK])
 		x->props.output_mark = nla_get_u32(attrs[XFRMA_OUTPUT_MARK]);
 
+	if (attrs[XFRMA_INPUT_MARK])
+		x->props.input_mark = nla_get_u32(attrs[XFRMA_INPUT_MARK]);
+
 	err = __xfrm_init_state(x, false, attrs[XFRMA_OFFLOAD_DEV]);
 	if (err)
 		goto error;

@@ -943,6 +943,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
 	unsigned short encap_family = tmpl->encap_family;
 	unsigned int sequence;
 	struct km_event c;
+	struct xfrm_if *xi;
 
 	to_put = NULL;
 
@@ -1043,7 +1044,11 @@ found:
 	}
 out:
 	if (x) {
-		if (!xfrm_state_hold_rcu(x)) {
+		xi = xfrmi_lookup(net, x);
+		if (xi && (fl->flowi_oif == xi->dev->ifindex)) {
+			*err = -EREMOTE;
+			x = NULL;
+		} else if (!xfrm_state_hold_rcu(x)) {
 			*err = -EAGAIN;
 			x = NULL;
 		}

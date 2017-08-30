@@ -2,6 +2,7 @@
 #define _LINUX_XFRM_H
 
 #include <linux/in6.h>
+#include <linux/if.h>
 #include <linux/types.h>
 
 /* All of the structures in this file may not change size as they are
