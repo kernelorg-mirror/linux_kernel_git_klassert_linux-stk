@@ -332,6 +332,9 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 			goto drop;
 		}
 
+		if (x->props.input_mark)
+			skb->mark = x->props.input_mark;
+
 		skb->sp->xvec[skb->sp->len++] = x;
 
 lock:
