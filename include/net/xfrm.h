@@ -23,6 +23,7 @@
 #include <net/ipv6.h>
 #include <net/ip6_fib.h>
 #include <net/flow.h>
+#include <net/gro_cells.h>
 
 #include <linux/interrupt.h>
 
@@ -1039,6 +1040,22 @@ static inline void xfrm_dst_destroy(struct xfrm_dst *xdst)
 
 void xfrm_dst_ifdown(struct dst_entry *dst, struct net_device *dev);
 
+struct xfrm_if_parms {
+	char name[IFNAMSIZ];	/* name of XFRM device */
+	int link;		/* ifindex of underlying L2 interface */
+	u32 if_id;		/* interface identifyer */
+};
+
+struct xfrm_if {
+	struct xfrm_if __rcu *next;	/* next interface in list */
+	struct net_device *dev;		/* virtual device associated with interface */
+	struct net_device *phydev;	/* physical device */
+	struct net *net;		/* netns for packet i/o */
+	struct xfrm_if_parms p;		/* interface parms */
+
+	struct gro_cells gro_cells;
+};
+
 struct xfrm_offload {
 	/* Output sequence number for replay protection on offloading. */
 	struct {
@@ -1992,6 +2009,25 @@ static inline void xfrm_dev_state_advance_esn(struct xfrm_state *x)
 static inline bool xfrm_dst_offload_ok(struct dst_entry *dst)
 {
 	return false;
+}
+#endif
+
+#ifdef CONFIG_XFRM_INTERFACE
+struct xfrm_if *xfrmi_lookup(struct net *net, struct xfrm_state *x);
+struct xfrm_if *xfrmi_lookup_byindex(struct net *net, int ifindex);
+bool xfrmi_match(struct net *net, struct xfrm_state *x);
+#else
+static inline  struct xfrm_if *xfrmi_lookup(struct net *net, struct xfrm_state *x)
+{
+	return NULL;
+}
+static inline  struct xfrm_if *xfrmi_lookup_byindex(struct net *net, int ifindex)
+{
+	return NULL;
+}
+bool xfrmi_match(struct net *net, struct xfrm_state *x)
+{
+	return true;
 }
 #endif
 

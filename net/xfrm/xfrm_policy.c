@@ -2080,6 +2080,11 @@ xfrm_bundle_lookup(struct net *net, const struct flowi *fl, u16 family, u8 dir, 
 
 	if (IS_ERR(xdst)) {
 		err = PTR_ERR(xdst);
+		if (err == -EREMOTE) {
+			xfrm_pols_put(pols, num_pols);
+			return NULL;
+		}
+
 		if (err != -EAGAIN)
 			goto error;
 		goto make_dummy_bundle;
@@ -2173,6 +2178,9 @@ struct dst_entry *xfrm_lookup(struct net *net, struct dst_entry *dst_orig,
 			if (IS_ERR(xdst)) {
 				xfrm_pols_put(pols, num_pols);
 				err = PTR_ERR(xdst);
+				if (err == -EREMOTE)
+					goto nopol;
+
 				goto dropdst;
 			} else if (xdst == NULL) {
 				num_xfrms = 0;
@@ -2365,12 +2373,17 @@ int __xfrm_decode_session(struct sk_buff *skb, struct flowi *fl,
 			  unsigned int family, int reverse)
 {
 	const struct xfrm_policy_afinfo *afinfo = xfrm_policy_get_afinfo(family);
+	struct xfrm_if *xi;
 	int err;
 
 	if (unlikely(afinfo == NULL))
 		return -EAFNOSUPPORT;
 
 	afinfo->decode_session(skb, fl, reverse);
+	xi = xfrmi_lookup_byindex(dev_net(skb->dev), skb->dev->ifindex);
+	if (xi)
+		fl->flowi_xfrm.if_id = xi->p.if_id;
+
 	err = security_xfrm_decode_session(skb, &fl->flowi_secid);
 	rcu_read_unlock();
 	return err;
