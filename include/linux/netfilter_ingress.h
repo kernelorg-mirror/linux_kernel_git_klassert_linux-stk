@@ -40,6 +40,7 @@ static inline int nf_hook_ingress(struct sk_buff *skb)
 
 static inline void nf_hook_ingress_init(struct net_device *dev)
 {
+	RCU_INIT_POINTER(dev->nf_hooks_gro, NULL);
 	RCU_INIT_POINTER(dev->nf_hooks_ingress, NULL);
 }
 #else /* CONFIG_NETFILTER_INGRESS */

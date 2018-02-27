@@ -194,6 +194,7 @@ next_rule:
 	case NF_DROP:
 	case NF_QUEUE:
 	case NF_STOLEN:
+	case NF_AGGREGATE:
 		nft_trace_packet(&info, chain, rule,
 				 rulenum, NFT_TRACETYPE_RULE);
 		return regs.verdict.code;

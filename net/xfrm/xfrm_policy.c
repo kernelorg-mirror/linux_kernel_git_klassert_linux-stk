@@ -1611,6 +1611,9 @@ static struct dst_entry *xfrm_bundle_create(struct xfrm_policy *policy,
 			err = PTR_ERR(dst);
 			if (IS_ERR(dst))
 				goto put_states;
+			if (xdst->route->flags & DST_FFWD)
+				dst->flags |= DST_FFWD;
+
 		} else
 			dst_hold(dst);
 

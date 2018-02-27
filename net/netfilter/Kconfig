@@ -9,6 +9,14 @@ config NETFILTER_INGRESS
 	  This allows you to classify packets from ingress using the Netfilter
 	  infrastructure.
 
+config NETFILTER_GRO
+	bool "Netfilter GRO support"
+	default y
+	help
+	  This allows you to perform very early filter and packet aggregation
+	  for fast forwarding bypass from the GRO path using the Netfilter
+	  infrastructure.
+
 config NETFILTER_NETLINK
 	tristate
 

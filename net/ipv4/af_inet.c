@@ -1805,6 +1805,7 @@ static int ipv4_proc_init(void);
 
 static struct packet_offload ip_packet_offload __read_mostly = {
 	.type = cpu_to_be16(ETH_P_IP),
+	.priority = 1,
 	.callbacks = {
 		.gso_segment = inet_gso_segment,
 		.gro_receive = inet_gro_receive,

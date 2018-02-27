@@ -6304,6 +6304,7 @@ static int nft_verdict_init(const struct nft_ctx *ctx, struct nft_data *data,
 		case NF_ACCEPT:
 		case NF_DROP:
 		case NF_QUEUE:
+		case NF_AGGREGATE:
 			break;
 		default:
 			return -EINVAL;

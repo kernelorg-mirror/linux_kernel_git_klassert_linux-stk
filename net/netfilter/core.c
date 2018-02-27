@@ -289,6 +289,11 @@ nf_hook_entry_head(struct net *net, int pf, unsigned int hooknum,
 			return &dev->nf_hooks_ingress;
 	}
 #endif
+	if (hooknum == NF_NETDEV_GRO) {
+		if (dev && dev_net(dev) == net)
+			return &dev->nf_hooks_gro;
+	}
+
 	WARN_ON_ONCE(1);
 	return NULL;
 }
@@ -304,7 +309,8 @@ static int __nf_register_net_hook(struct net *net, int pf,
 		if (reg->hooknum == NF_NETDEV_INGRESS)
 			return -EOPNOTSUPP;
 #endif
-		if (reg->hooknum != NF_NETDEV_INGRESS ||
+		if ((reg->hooknum != NF_NETDEV_INGRESS &&
+		     reg->hooknum != NF_NETDEV_GRO) ||
 		    !reg->dev || dev_net(reg->dev) != net)
 			return -EINVAL;
 	}
@@ -330,6 +336,9 @@ static int __nf_register_net_hook(struct net *net, int pf,
 	if (pf == NFPROTO_NETDEV && reg->hooknum == NF_NETDEV_INGRESS)
 		net_inc_ingress_queue();
 #endif
+	if (pf == NFPROTO_NETDEV && reg->hooknum == NF_NETDEV_GRO)
+		nf_gro_enable();
+
 #ifdef HAVE_JUMP_LABEL
 	static_key_slow_inc(&nf_hooks_needed[pf][reg->hooknum]);
 #endif
@@ -369,6 +378,8 @@ static void nf_remove_net_hook(struct nf_hook_entries *old,
 		if (pf == NFPROTO_NETDEV && unreg->hooknum == NF_NETDEV_INGRESS)
 			net_dec_ingress_queue();
 #endif
+		if (pf == NFPROTO_NETDEV && unreg->hooknum == NF_NETDEV_GRO)
+			nf_gro_disable();
 #ifdef HAVE_JUMP_LABEL
 		static_key_slow_dec(&nf_hooks_needed[pf][unreg->hooknum]);
 #endif

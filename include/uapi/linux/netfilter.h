@@ -14,7 +14,8 @@
 #define NF_QUEUE 3
 #define NF_REPEAT 4
 #define NF_STOP 5	/* Deprecated, for userspace nf_queue compatibility. */
-#define NF_MAX_VERDICT NF_STOP
+#define NF_AGGREGATE 6
+#define NF_MAX_VERDICT NF_AGGREGATE
 
 /* we overload the higher bits for encoding auxiliary data such as the queue
  * number or errno values. Not nice, but better than additional function
@@ -54,6 +55,7 @@ enum nf_inet_hooks {
 
 enum nf_dev_hooks {
 	NF_NETDEV_INGRESS,
+	NF_NETDEV_GRO,
 	NF_NETDEV_NUMHOOKS
 };
 

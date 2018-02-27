@@ -55,8 +55,9 @@ enum {
 	NETIF_F_GSO_SCTP_BIT,		/* ... SCTP fragmentation */
 	NETIF_F_GSO_ESP_BIT,		/* ... ESP with TSO */
 	NETIF_F_GSO_UDP_BIT,		/* ... UFO, deprecated except tuntap */
+	NETIF_F_GSO_NFT_BIT,		/* ... NFT generic */
 	/**/NETIF_F_GSO_LAST =		/* last bit, see GSO_MASK */
-		NETIF_F_GSO_UDP_BIT,
+		NETIF_F_GSO_NFT_BIT,
 
 	NETIF_F_FCOE_CRC_BIT,		/* FCoE CRC32 */
 	NETIF_F_SCTP_CRC_BIT,		/* SCTP checksum offload */
@@ -137,6 +138,7 @@ enum {
 #define NETIF_F_GSO_SCTP	__NETIF_F(GSO_SCTP)
 #define NETIF_F_GSO_ESP		__NETIF_F(GSO_ESP)
 #define NETIF_F_GSO_UDP		__NETIF_F(GSO_UDP)
+#define NETIF_F_GSO_NFT		__NETIF_F(GSO_NFT)
 #define NETIF_F_HW_VLAN_STAG_FILTER __NETIF_F(HW_VLAN_STAG_FILTER)
 #define NETIF_F_HW_VLAN_STAG_RX	__NETIF_F(HW_VLAN_STAG_RX)
 #define NETIF_F_HW_VLAN_STAG_TX	__NETIF_F(HW_VLAN_STAG_TX)

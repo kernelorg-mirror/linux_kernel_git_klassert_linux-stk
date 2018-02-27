@@ -146,10 +146,14 @@ int xfrm_output_resume(struct sk_buff *skb, int err)
 	while (likely((err = xfrm_output_one(skb, err)) == 0)) {
 		nf_reset(skb);
 
+		if (!skb_dst(skb)->xfrm && skb->sp && (skb_shinfo(skb)->gso_type & SKB_GSO_NFT)) {
+			if (skb_dst(skb)->flags & DST_FFWD)
+				return -EREMOTE;
+		}
+
 		err = skb_dst(skb)->ops->local_out(net, skb->sk, skb);
 		if (unlikely(err != 1))
 			goto out;
-
 		if (!skb_dst(skb)->xfrm)
 			return dst_output(net, skb->sk, skb);
 

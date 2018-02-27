@@ -468,7 +468,21 @@ void dev_remove_pack(struct packet_type *pt)
 }
 EXPORT_SYMBOL(dev_remove_pack);
 
+struct packet_offload *dev_get_packet_offload(__be16 type, int priority)
+{
+	struct list_head *offload_head = &offload_base;
+	struct packet_offload *ptype;
 
+	list_for_each_entry_rcu(ptype, offload_head, list) {
+		if (ptype->type != type || !ptype->callbacks.gro_receive || !ptype->callbacks.gro_complete || ptype->priority < priority)
+			continue;
+
+		return ptype;
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL(dev_get_packet_offload);
 /**
  *	dev_add_offload - register offload handlers
  *	@po: protocol offload declaration
@@ -2780,6 +2794,9 @@ EXPORT_SYMBOL(skb_mac_gso_segment);
  */
 static inline bool skb_needs_check(struct sk_buff *skb, bool tx_path)
 {
+	if (skb_shinfo(skb)->gso_type & SKB_GSO_NFT)
+		return false;
+
 	if (tx_path)
 		return skb->ip_summed != CHECKSUM_PARTIAL &&
 		       skb->ip_summed != CHECKSUM_UNNECESSARY;
@@ -2804,6 +2821,7 @@ struct sk_buff *__skb_gso_segment(struct sk_buff *skb,
 				  netdev_features_t features, bool tx_path)
 {
 	struct sk_buff *segs;
+	bool gso_nft;
 
 	if (unlikely(skb_needs_check(skb, tx_path))) {
 		int err;
@@ -2836,9 +2854,11 @@ struct sk_buff *__skb_gso_segment(struct sk_buff *skb,
 	skb_reset_mac_header(skb);
 	skb_reset_mac_len(skb);
 
+	gso_nft = skb_shinfo(skb)->gso_type & SKB_GSO_NFT;
+
 	segs = skb_mac_gso_segment(skb, features);
 
-	if (unlikely(skb_needs_check(skb, tx_path) && !IS_ERR(segs)))
+	if (!gso_nft && unlikely(skb_needs_check(skb, tx_path) && !IS_ERR(segs)))
 		skb_warn_bad_offload(skb);
 
 	return segs;
@@ -4776,7 +4796,8 @@ static int napi_gro_complete(struct sk_buff *skb)
 
 	BUILD_BUG_ON(sizeof(struct napi_gro_cb) > sizeof(skb->cb));
 
-	if (NAPI_GRO_CB(skb)->count == 1) {
+	if (NAPI_GRO_CB(skb)->count <= 1 &&
+	    !(NAPI_GRO_CB(skb)->is_ffwd || skb_dst(skb))) {
 		skb_shinfo(skb)->gso_size = 0;
 		goto out;
 	}
@@ -4792,8 +4813,10 @@ static int napi_gro_complete(struct sk_buff *skb)
 	rcu_read_unlock();
 
 	if (err) {
-		WARN_ON(&ptype->list == head);
-		kfree_skb(skb);
+		if (err != -EINPROGRESS) {
+			WARN_ON(&ptype->list == head);
+			kfree_skb(skb);
+		}
 		return NET_RX_SUCCESS;
 	}
 
@@ -4848,8 +4871,10 @@ static void gro_list_prepare(struct napi_struct *napi, struct sk_buff *skb)
 
 		diffs = (unsigned long)p->dev ^ (unsigned long)skb->dev;
 		diffs |= p->vlan_tci ^ skb->vlan_tci;
-		diffs |= skb_metadata_dst_cmp(p, skb);
-		diffs |= skb_metadata_differs(p, skb);
+		if (!NAPI_GRO_CB(p)->is_ffwd) {
+			diffs |= skb_metadata_dst_cmp(p, skb);
+			diffs |= skb_metadata_differs(p, skb);
+		}
 		if (maclen == ETH_HLEN)
 			diffs |= compare_ether_header(skb_mac_header(p),
 						      skb_mac_header(skb));
@@ -4931,6 +4956,8 @@ static enum gro_result dev_gro_receive(struct napi_struct *napi, struct sk_buff 
 		NAPI_GRO_CB(skb)->is_fou = 0;
 		NAPI_GRO_CB(skb)->is_atomic = 1;
 		NAPI_GRO_CB(skb)->gro_remcsum_start = 0;
+		NAPI_GRO_CB(skb)->is_ffwd = 0;
+		NAPI_GRO_CB(skb)->count = 0;
 
 		/* Setup for GRO checksum validation */
 		switch (skb->ip_summed) {
@@ -4956,9 +4983,14 @@ static enum gro_result dev_gro_receive(struct napi_struct *napi, struct sk_buff 
 	if (&ptype->list == head)
 		goto normal;
 
-	if (IS_ERR(pp) && PTR_ERR(pp) == -EINPROGRESS) {
-		ret = GRO_CONSUMED;
-		goto ok;
+	if (IS_ERR(pp)) {
+		int err;
+
+		err = PTR_ERR(pp);
+		if (err == -EINPROGRESS || err == -EPERM) {
+			ret = GRO_CONSUMED;
+			goto ok;
+		}
 	}
 
 	same_flow = NAPI_GRO_CB(skb)->same_flow;
@@ -4976,8 +5008,15 @@ static enum gro_result dev_gro_receive(struct napi_struct *napi, struct sk_buff 
 	if (same_flow)
 		goto ok;
 
-	if (NAPI_GRO_CB(skb)->flush)
+	if (NAPI_GRO_CB(skb)->flush) {
+		if (NAPI_GRO_CB(skb)->is_ffwd) {
+			napi_gro_complete(skb);
+			ret = GRO_CONSUMED;
+			goto ok;
+		}
+
 		goto normal;
+	}
 
 	if (unlikely(napi->gro_count >= MAX_GRO_SKBS)) {
 		struct sk_buff *nskb = napi->gro_list;
@@ -5001,6 +5040,8 @@ static enum gro_result dev_gro_receive(struct napi_struct *napi, struct sk_buff 
 	napi->gro_list = skb;
 	ret = GRO_HELD;
 
+	if (NAPI_GRO_CB(skb)->is_ffwd)
+		goto ok;
 pull:
 	grow = skb_gro_offset(skb) - skb_headlen(skb);
 	if (grow > 0)

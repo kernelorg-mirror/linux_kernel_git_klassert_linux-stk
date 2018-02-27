@@ -43,9 +43,11 @@ static const struct nf_chain_type nft_filter_chain_netdev = {
 	.type		= NFT_CHAIN_T_DEFAULT,
 	.family		= NFPROTO_NETDEV,
 	.owner		= THIS_MODULE,
-	.hook_mask	= (1 << NF_NETDEV_INGRESS),
+	.hook_mask	= (1 << NF_NETDEV_INGRESS) |
+			  (1 << NF_NETDEV_GRO),
 	.hooks		= {
 		[NF_NETDEV_INGRESS]	= nft_do_chain_netdev,
+		[NF_NETDEV_GRO]		= nft_do_chain_netdev,
 	},
 };
 

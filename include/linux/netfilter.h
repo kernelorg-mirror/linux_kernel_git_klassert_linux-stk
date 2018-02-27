@@ -412,4 +412,7 @@ DECLARE_PER_CPU(bool, nf_skb_duplicated);
 int nf_hook_netdev(struct sk_buff *skb, struct nf_hook_state *state,
 		   const struct nf_hook_entries *e, int *err);
 
+void nf_gro_enable(void);
+void nf_gro_disable(void);
+
 #endif /*__LINUX_NETFILTER_H*/
