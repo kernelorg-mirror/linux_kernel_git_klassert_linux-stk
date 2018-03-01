@@ -409,4 +409,7 @@ extern struct nfnl_ct_hook __rcu *nfnl_ct_hook;
  */
 DECLARE_PER_CPU(bool, nf_skb_duplicated);
 
+int nf_hook_netdev(struct sk_buff *skb, struct nf_hook_state *state,
+		   const struct nf_hook_entries *e, int *err);
+
 #endif /*__LINUX_NETFILTER_H*/

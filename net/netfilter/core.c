@@ -507,6 +507,31 @@ int nf_hook_slow(struct sk_buff *skb, struct nf_hook_state *state,
 }
 EXPORT_SYMBOL(nf_hook_slow);
 
+int nf_hook_netdev(struct sk_buff *skb, struct nf_hook_state *state,
+		   const struct nf_hook_entries *e, int *err)
+{
+	unsigned int verdict, s, v = NF_ACCEPT;
+
+	for (s = 0; s < e->num_hook_entries; s++) {
+		verdict = nf_hook_entry_hookfn(&e->hooks[s], skb, state);
+		v = verdict & NF_VERDICT_MASK;
+		switch (v) {
+		case NF_ACCEPT:
+			break;
+		case NF_DROP:
+			kfree_skb(skb);
+			*err = NF_DROP_GETERR(verdict);
+			if (*err == 0)
+				*err = -EPERM;
+
+			/* Fall through */
+		default:
+			return v;
+		}
+	}
+
+	return v;
+}
 
 int skb_make_writable(struct sk_buff *skb, unsigned int writable_len)
 {
