@@ -2729,9 +2729,11 @@ int udp_lib_setsockopt(struct sock *sk, int level, int optname,
 #if IS_ENABLED(CONFIG_IPV6)
 			if (sk->sk_family == AF_INET6)
 				up->encap_rcv = ipv6_stub->xfrm6_udp_encap_rcv;
-			else
 #endif
+			if (sk->sk_family == AF_INET) {
 				up->encap_rcv = xfrm4_udp_encap_rcv;
+				up->gro_receive = xfrm4_gro_udp_encap_rcv;
+			}
 #endif
 			fallthrough;
 		case UDP_ENCAP_L2TPINUDP:
