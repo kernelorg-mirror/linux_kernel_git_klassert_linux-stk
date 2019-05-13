@@ -458,6 +458,36 @@ static int xfrm_inner_mode_input(struct xfrm_state *x,
 	return -EOPNOTSUPP;
 }
 
+static int xfrm_input_check_offload(struct net *net, struct sk_buff *skb,
+				    struct xfrm_state *x,
+				    struct xfrm_offload *xo)
+{
+	if (!(xo->status & CRYPTO_SUCCESS)) {
+		if (xo->status &
+		    (CRYPTO_TRANSPORT_AH_AUTH_FAILED |
+		     CRYPTO_TRANSPORT_ESP_AUTH_FAILED |
+		     CRYPTO_TUNNEL_AH_AUTH_FAILED |
+		     CRYPTO_TUNNEL_ESP_AUTH_FAILED)) {
+
+			xfrm_audit_state_icvfail(x, skb,
+						 x->type->proto);
+			x->stats.integrity_failed++;
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR);
+			return -EINVAL;
+		}
+
+		if (xo->status & CRYPTO_INVALID_PROTOCOL) {
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR);
+			return -EINVAL;
+		}
+
+		XFRM_INC_STATS(net, LINUX_MIB_XFRMINBUFFERERROR);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 {
 	const struct xfrm_state_afinfo *afinfo;
@@ -477,7 +507,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 	struct xfrm_offload *xo = xfrm_offload(skb);
 	struct sec_path *sp;
 
-	if (encap_type < 0) {
+	if (encap_type < 0 || (xo && xo->flags & XFRM_GRO)) {
 		x = xfrm_input_state(skb);
 
 		if (unlikely(x->km.state != XFRM_STATE_VALID)) {
@@ -495,46 +525,27 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 		family = x->outer_mode.family;
 
 		/* An encap_type of -1 indicates async resumption. */
-		if (encap_type == -1) {
+		if (encap_type  < 0) {
 			async = 1;
 			seq = XFRM_SKB_CB(skb)->seq.input.low;
 			goto resume;
-		}
+		} else {
+			/* GRO call */
+			seq = XFRM_SPI_SKB_CB(skb)->seq;
 
-		/* encap_type < -1 indicates a GRO call. */
-		encap_type = 0;
-		seq = XFRM_SPI_SKB_CB(skb)->seq;
+			if (xo && (xo->flags & CRYPTO_DONE)) {
+				crypto_done = true;
+				family = XFRM_SPI_SKB_CB(skb)->family;
 
-		if (xo && (xo->flags & CRYPTO_DONE)) {
-			crypto_done = true;
-			family = XFRM_SPI_SKB_CB(skb)->family;
 
-			if (!(xo->status & CRYPTO_SUCCESS)) {
-				if (xo->status &
-				    (CRYPTO_TRANSPORT_AH_AUTH_FAILED |
-				     CRYPTO_TRANSPORT_ESP_AUTH_FAILED |
-				     CRYPTO_TUNNEL_AH_AUTH_FAILED |
-				     CRYPTO_TUNNEL_ESP_AUTH_FAILED)) {
+				err = xfrm_input_check_offload(net, skb, x, xo);
+				if (err)
+					goto drop;
 
-					xfrm_audit_state_icvfail(x, skb,
-								 x->type->proto);
-					x->stats.integrity_failed++;
-					XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR);
+				if (xfrm_parse_spi(skb, nexthdr, &spi, &seq)) {
+					XFRM_INC_STATS(net, LINUX_MIB_XFRMINHDRERROR);
 					goto drop;
 				}
-
-				if (xo->status & CRYPTO_INVALID_PROTOCOL) {
-					XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR);
-					goto drop;
-				}
-
-				XFRM_INC_STATS(net, LINUX_MIB_XFRMINBUFFERERROR);
-				goto drop;
-			}
-
-			if (xfrm_parse_spi(skb, nexthdr, &spi, &seq)) {
-				XFRM_INC_STATS(net, LINUX_MIB_XFRMINHDRERROR);
-				goto drop;
 			}
 		}
 
