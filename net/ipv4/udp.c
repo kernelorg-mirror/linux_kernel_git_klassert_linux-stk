@@ -2727,8 +2727,10 @@ int udp_lib_setsockopt(struct sock *sk, int level, int optname,
 		case UDP_ENCAP_ESPINUDP:
 		case UDP_ENCAP_ESPINUDP_NON_IKE:
 #if IS_ENABLED(CONFIG_IPV6)
-			if (sk->sk_family == AF_INET6)
+			if (sk->sk_family == AF_INET6) {
 				up->encap_rcv = ipv6_stub->xfrm6_udp_encap_rcv;
+				up->gro_receive = ipv6_stub->xfrm6_gro_udp_encap_rcv;
+			}
 #endif
 			if (sk->sk_family == AF_INET) {
 				up->encap_rcv = xfrm4_udp_encap_rcv;
