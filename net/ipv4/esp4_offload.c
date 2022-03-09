@@ -92,17 +92,28 @@ static void esp4_gso_encap(struct xfrm_state *x, struct sk_buff *skb)
 {
 	struct ip_esp_hdr *esph;
 	struct iphdr *iph = ip_hdr(skb);
-	struct xfrm_offload *xo = xfrm_offload(skb);
+	struct xfrm_offload *xo;
+//	struct xfrm_offload *xo = xfrm_offload(skb);
 	int proto = iph->protocol;
+	struct sk_buff *iter;
+//	__u32 seq = XFRM_SKB_CB(skb)->seq.output.low;
 
-	skb_push(skb, -skb_network_offset(skb));
-	esph = ip_esp_hdr(skb);
-	*skb_mac_header(skb) = IPPROTO_ESP;
+//	xo->proto = proto;
+	iter = skb;
 
-	esph->spi = x->id.spi;
-	esph->seq_no = htonl(XFRM_SKB_CB(skb)->seq.output.low);
+	while (iter) {
+		xo = xfrm_offload(iter);
+		xo->proto = proto;
+		skb_push(iter, -skb_network_offset(iter));
+		esph = ip_esp_hdr(iter);
+		*skb_mac_header(iter) = IPPROTO_ESP;
 
-	xo->proto = proto;
+		esph->spi = x->id.spi;
+		esph->seq_no = htonl(XFRM_SKB_CB(iter)->seq.output.low);
+//		seq++;
+
+		iter = iter->next;
+	}
 }
 
 static struct sk_buff *xfrm4_tunnel_gso_segment(struct xfrm_state *x,

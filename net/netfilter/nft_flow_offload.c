@@ -36,6 +36,7 @@ static void nft_default_forward_path(struct nf_flow_route *route,
 	route->tuple[dir].xmit_type	= nft_xmit_type(dst_cache);
 }
 
+/*
 static int nft_dev_fill_forward_path(const struct nf_flow_route *route,
 				     const struct dst_entry *dst_cache,
 				     const struct nf_conn *ct,
@@ -114,7 +115,6 @@ static void nft_dev_path_info(const struct net_device_path_stack *stack,
 				break;
 			}
 
-			/* DEV_PATH_VLAN and DEV_PATH_PPPOE */
 			if (info->num_encaps >= NF_FLOW_TABLE_ENCAP_MAX) {
 				info->indev = NULL;
 				break;
@@ -212,6 +212,7 @@ static void nft_dev_forward_path(struct nf_flow_route *route,
 		route->tuple[dir].xmit_type = info.xmit_type;
 	}
 }
+*/
 
 static int nft_flow_route(const struct nft_pktinfo *pkt,
 			  const struct nf_conn *ct,
@@ -242,19 +243,22 @@ static int nft_flow_route(const struct nft_pktinfo *pkt,
 	nft_default_forward_path(route, this_dst, dir);
 	nft_default_forward_path(route, other_dst, !dir);
 
+/*
 	if (route->tuple[dir].xmit_type	== FLOW_OFFLOAD_XMIT_NEIGH &&
 	    route->tuple[!dir].xmit_type == FLOW_OFFLOAD_XMIT_NEIGH) {
 		nft_dev_forward_path(route, ct, dir, ft);
 		nft_dev_forward_path(route, ct, !dir, ft);
 	}
+*/
 
 	return 0;
 }
 
 static bool nft_flow_offload_skip(struct sk_buff *skb, int family)
 {
-	if (skb_sec_path(skb))
-		return true;
+	/* FIXME: */
+//	if (skb_sec_path(skb))
+//		return true;
 
 	if (family == NFPROTO_IPV4) {
 		const struct ip_options *opt;
