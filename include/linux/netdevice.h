@@ -2463,7 +2463,7 @@ static inline void *netdev_priv(const struct net_device *dev)
 /* Default NAPI poll() weight
  * Device drivers are strongly advised to not use bigger value
  */
-#define NAPI_POLL_WEIGHT 64
+#define NAPI_POLL_WEIGHT 128
 
 /**
  *	netif_napi_add - initialize a NAPI context
