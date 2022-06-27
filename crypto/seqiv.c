@@ -65,6 +65,7 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	data = req->base.data;
 	info = req->iv;
 
+/*
 	if (req->src != req->dst) {
 		SYNC_SKCIPHER_REQUEST_ON_STACK(nreq, ctx->sknull);
 
@@ -79,7 +80,7 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 		if (err)
 			return err;
 	}
-
+*/
 	if (unlikely(!IS_ALIGNED((unsigned long)info,
 				 crypto_aead_alignmask(geniv) + 1))) {
 		info = kmemdup(req->iv, ivsize, req->base.flags &
@@ -93,7 +94,7 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	}
 
 	aead_request_set_callback(subreq, req->base.flags, compl, data);
-	aead_request_set_crypt(subreq, req->dst, req->dst,
+	aead_request_set_crypt(subreq, req->src, req->dst,
 			       req->cryptlen - ivsize, info);
 	aead_request_set_ad(subreq, req->assoclen + ivsize);
 

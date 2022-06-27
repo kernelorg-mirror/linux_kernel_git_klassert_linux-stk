@@ -364,6 +364,7 @@ slow_path:
 		goto set_phys_lowmem;
 	}
 
+/*
 	if (unlikely((walk->in.offset | walk->out.offset) & walk->alignmask)) {
 		if (!walk->page) {
 			gfp_t gfp = skcipher_walk_gfp(walk);
@@ -379,7 +380,7 @@ slow_path:
 		err = skcipher_next_copy(walk);
 		goto set_phys_lowmem;
 	}
-
+*/
 	walk->nbytes = n;
 
 	return skcipher_next_fast(walk);
