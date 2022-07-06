@@ -149,6 +149,27 @@ struct flow_offload_tuple {
 		struct {
 			struct dst_entry *dst_cache;
 			u32		dst_cookie;
+			u8		tunnel_num;
+			struct {
+				u8	l3proto;
+				u8	l4proto;
+				u8	tos;
+				u8	ttl;
+				__be16	df;
+
+				union {
+					struct in_addr		src_v4;
+					struct in6_addr		src_v6;
+				};
+				union {
+					struct in_addr		dst_v4;
+					struct in6_addr		dst_v6;
+				};
+				struct {
+					__be16			src_port;
+					__be16			dst_port;
+				};
+			} tunnel;
 		};
 		struct {
 			u32		ifidx;
@@ -230,6 +251,17 @@ struct nf_flow_route {
 			u32			hw_ifindex;
 			u8			h_source[ETH_ALEN];
 			u8			h_dest[ETH_ALEN];
+
+			int			num_tunnels;
+			struct {
+				int		ifindex;
+				u8		l3proto;
+				u8		l4proto;
+				struct {
+					__be32	saddr;
+					__be32	daddr;
+				} ip;
+			} tun;
 		} out;
 		enum flow_offload_xmit_type	xmit_type;
 	} tuple[FLOW_OFFLOAD_DIR_MAX];

@@ -154,7 +154,13 @@ static void nft_dev_path_info(const struct net_device_path_stack *stack,
 			route->tuple[!dir].in.tun.ip.saddr = path->tun.ip.daddr;
 			route->tuple[!dir].in.tun.ip.daddr = path->tun.ip.saddr;
 			route->tuple[!dir].in.tun.l4proto = path->tun.l4proto;
-			dst_release(path->tun.dst);
+
+			route->tuple[dir].out.num_tunnels++;
+			route->tuple[dir].out.tun.l3proto = path->tun.l3proto;
+			route->tuple[dir].out.tun.ip.saddr = path->tun.ip.saddr;
+			route->tuple[dir].out.tun.ip.daddr = path->tun.ip.daddr;
+			route->tuple[dir].out.tun.l4proto = path->tun.l4proto;
+			route->tuple[dir].dst = path->tun.dst;
 			break;
 		default:
 			info->indev = NULL;

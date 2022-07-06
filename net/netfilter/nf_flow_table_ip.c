@@ -519,6 +519,58 @@ out:
 	return;
 }
 
+/* extract from ip_tunnel_xmit(). */
+static unsigned int nf_flow_tunnel_add(struct net *net, struct sk_buff *skb,
+				       struct flow_offload *flow, int dir,
+				       const struct rtable *rt,
+				       struct iphdr *inner_iph)
+{
+	u32 headroom = sizeof(struct iphdr);
+	struct iphdr *iph;
+	u8 tos, ttl;
+	__be16 df;
+
+	if (iptunnel_handle_offloads(skb, SKB_GSO_IPXIP4))
+		return -1;
+
+	skb_set_inner_ipproto(skb, IPPROTO_IPIP);
+
+	headroom += LL_RESERVED_SPACE(rt->dst.dev) + rt->dst.header_len;
+
+        if (skb_cow_head(skb, headroom))
+		return -1;
+
+	skb_scrub_packet(skb, true);
+	skb_clear_hash_if_not_l4(skb);
+	memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
+
+        /* Push down and install the IP header. */
+	skb_push(skb, sizeof(struct iphdr));
+	skb_reset_network_header(skb);
+
+	df = flow->tuple[dir]->tunnel.df;
+	tos = ip_tunnel_ecn_encap(flow->tuple[dir]->tunnel.tos, inner_iph, skb);
+	ttl = flow->tuple[dir]->tunnel.ttl;
+	if (ttl == 0)
+		ttl = inner_iph->ttl;
+
+	iph = ip_hdr(skb);
+
+	iph->version    =       4;
+	iph->ihl        =       sizeof(struct iphdr) >> 2;
+	iph->frag_off   =       ip_mtu_locked(&rt->dst) ? 0 : df;
+	iph->protocol   =       flow->tuple[dir]->tunnel.l4proto;
+	iph->tos        =       flow->tuple[dir]->tunnel.tos;
+	iph->daddr      =       flow->tuple[dir]->tunnel.dst_v4.s_addr;
+	iph->saddr      =	flow->tuple[dir]->tunnel.src_v4.s_addr;
+	iph->ttl        =       ttl;
+	iph->tot_len	=	htons(skb->len);
+	__ip_select_ident(net, iph, skb_shinfo(skb)->gso_segs ?: 1);
+	ip_send_check(iph);
+
+	return 0;
+}
+
 unsigned int
 __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 			const struct nf_hook_state *state)
@@ -986,9 +1038,19 @@ nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 	switch (flow->tuple[dir]->xmit_type) {
 	case FLOW_OFFLOAD_XMIT_NEIGH:
 		rt = (struct rtable *)flow->tuple[dir]->dst_cache;
+		if (flow->tuple[dir]->tunnel_num) {
+			ret = nf_flow_tunnel_add(state->net, skb, flow, dir, rt, iph);
+			if (ret < 0) {
+				ret = NF_DROP;
+				flow_offload_teardown(flow);
+				break;
+			}
+			nexthop = rt_nexthop(rt, flow->tuple[dir]->tunnel.dst_v4.s_addr);
+		} else {
+			nexthop = rt_nexthop(rt, flow->tuple[!dir]->src_v4.s_addr);
+		}
 		outdev = rt->dst.dev;
 		skb->dev = outdev;
-		nexthop = rt_nexthop(rt, flow->tuple[!dir]->src_v4.s_addr);
 		skb_dst_set_noref(skb, &rt->dst);
 		neigh_xmit(NEIGH_ARP_TABLE, outdev, &nexthop, skb);
 		ret = NF_STOLEN;

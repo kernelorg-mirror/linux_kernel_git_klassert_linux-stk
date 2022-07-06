@@ -171,6 +171,24 @@ static int flow_offload_fill_route(struct flow_offload *flow,
 		flow_tuple->tun.inner = flow->inner_tuple;
 	}
 
+	if (route->tuple[dir].out.num_tunnels) {
+		flow_tuple->tunnel_num++;
+
+		switch (route->tuple[dir].out.tun.l3proto) {
+		case NFPROTO_IPV4:
+			flow_tuple->tunnel.src_v4.s_addr = route->tuple[dir].out.tun.ip.saddr;
+			flow_tuple->tunnel.dst_v4.s_addr = route->tuple[dir].out.tun.ip.daddr;
+			break;
+		case NFPROTO_IPV6:
+			break;
+		}
+
+		flow_tuple->tunnel.l3proto = route->tuple[dir].out.tun.l3proto;
+		flow_tuple->tunnel.l4proto = route->tuple[dir].out.tun.l4proto;
+		flow_tuple->tunnel.src_port = 0;
+		flow_tuple->tunnel.dst_port = 0;
+	}
+
 	return 0;
 }
 
