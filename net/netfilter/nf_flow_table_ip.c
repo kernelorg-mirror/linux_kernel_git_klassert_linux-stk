@@ -512,6 +512,8 @@ __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 		skb_reset_transport_header(skb);
 	skb_reset_mac_len(skb);
 
+	prefetchw(skb_network_header(skb));
+
 	if (skb->protocol != htons(ETH_P_IP) &&
 	    !nf_flow_skb_encap_protocol(skb, htons(ETH_P_IP), &offset))
 		return 0;
