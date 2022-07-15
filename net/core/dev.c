@@ -6207,6 +6207,11 @@ gro_result_t napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
 	gro_result_t ret;
 
 	skb_mark_napi_id(skb, napi);
+	if (netif_elide_gro(skb->dev)) {
+		gro_normal_one(napi, skb, 1);
+		return GRO_NORMAL;
+	}
+
 	trace_napi_gro_receive_entry(skb);
 
 	skb_gro_reset_offset(skb, 0);
