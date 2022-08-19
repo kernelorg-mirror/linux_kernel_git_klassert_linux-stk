@@ -760,7 +760,6 @@ struct sk_buff *xfrm_output_list(struct sk_buff *skb)
 	struct net *net = dev_net(skb_dst(skb)->dev);
 	struct xfrm_state *x = skb_dst(skb)->xfrm;
 	struct list_head head;
-	struct list_head head2;
 	struct dst_entry *dst;
 //	struct sec_path *sp;
 	struct sk_buff *iter;
@@ -783,35 +782,6 @@ struct sk_buff *xfrm_output_list(struct sk_buff *skb)
 	INIT_LIST_HEAD(&head);
 	skb_list_walk_safe(skb, iter, nskb) {
 		skb_mark_not_on_list(iter);
-
-		switch (x->outer_mode.family) {
-		case AF_INET:
-//			memset(IPCB(iter), 0, sizeof(*IPCB(iter)));
-			IPCB(iter)->flags = IPSKB_XFRM_TRANSFORMED;
-			break;
-		case AF_INET6:
-//			memset(IP6CB(iter), 0, sizeof(*IP6CB(iter)));
-			IP6CB(iter)->flags = IP6SKB_XFRM_TRANSFORMED;
-			break;
-		}
-
-		/*
-		secpath_reset(iter);
-
-		sp = secpath_set(iter);
-		if (!sp) {
-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
-			if (iter == skb)
-				skb = next;
-			kfree_skb(iter);
-			iter = next;
-			continue;
-		}
-
-		sp->olen++;
-		sp->xvec[sp->len++] = x;
-		xfrm_state_hold(x);
-		*/
 
 		if (iter->encapsulation)
 			xfrm_get_inner_ipproto(iter);
@@ -867,33 +837,29 @@ struct sk_buff *xfrm_output_list(struct sk_buff *skb)
 		/* Inner headers are invalid now. */
 		iter->encapsulation = 0;
 
+		XFRM_BULK_SKB_CB(iter)->err = 0;
+
 		list_add_tail(&iter->list, &head);
 	}
 
 	err = x->type->output_list(x, &head);
-/*	
-	INIT_LIST_HEAD(&head2);
-	list_for_each_entry_safe(skb, nskb, &head, list) {
-		skb_list_del_init(skb);
-		err = x->type->output(x, skb);
-		if (err == -EINPROGRESS)
-			continue;
-		
-		if (err) {
-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEPROTOERROR);
-			kfree_skb(skb);
-			continue;
-		}
-
-		list_add_tail(&skb->list, &head2);
-	}
-*/
 
 	iter = NULL;
 
 	list_for_each_entry_safe(skb, nskb, &head, list) {
 
 		skb_list_del_init(skb);
+
+		if (XFRM_BULK_SKB_CB(skb)->err) {
+			if (XFRM_BULK_SKB_CB(skb)->err) {
+				XFRM_BULK_SKB_CB(skb)->err = 0;
+				continue;
+			} else {
+				XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+				kfree_skb(skb);
+				continue;
+			}
+		}
 
 		dst = skb_dst_pop_noref(skb);
 		if (!dst) {
@@ -908,8 +874,10 @@ struct sk_buff *xfrm_output_list(struct sk_buff *skb)
 			iph = ip_hdr(skb);
 			iph->tot_len = htons(skb->len);
 			ip_send_check(iph);
+			IPCB(skb)->flags = IPSKB_XFRM_TRANSFORMED;
 			break;
 		case AF_INET6:
+			IP6CB(skb)->flags = IP6SKB_XFRM_TRANSFORMED;
 			break;
 		}
 
