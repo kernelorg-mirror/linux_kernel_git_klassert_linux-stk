@@ -90,7 +90,7 @@ static int flow_offload_fill_route(struct flow_offload *flow,
 				   const struct nf_flow_route *route,
 				   enum flow_offload_tuple_dir dir)
 {
-	struct flow_offload_tuple *flow_tuple = &flow->tuplehash[dir].tuple;
+	struct flow_offload_tuple *flow_tuple = flow->tuple[dir];
 	struct dst_entry *dst = route->tuple[dir].dst;
 	int i, j = 0;
 
@@ -142,9 +142,9 @@ static int flow_offload_fill_route(struct flow_offload *flow,
 static void nft_flow_dst_release(struct flow_offload *flow,
 				 enum flow_offload_tuple_dir dir)
 {
-	if (flow->tuplehash[dir].tuple.xmit_type == FLOW_OFFLOAD_XMIT_NEIGH ||
-	    flow->tuplehash[dir].tuple.xmit_type == FLOW_OFFLOAD_XMIT_XFRM)
-		dst_release(flow->tuplehash[dir].tuple.dst_cache);
+	if (flow->tuple[dir]->xmit_type == FLOW_OFFLOAD_XMIT_NEIGH ||
+	    flow->tuple[dir]->xmit_type == FLOW_OFFLOAD_XMIT_XFRM)
+		dst_release(flow->tuple[dir]->dst_cache);
 }
 
 int flow_offload_route_init(struct flow_offload *flow,
@@ -300,6 +300,9 @@ int flow_offload_add(struct nf_flowtable *flow_table, struct flow_offload *flow)
 				       nf_flow_offload_rhash_params);
 		return err;
 	}
+
+	flow->tuple[0] = &flow->tuplehash[0].tuple;
+	flow->tuple[1] = &flow->tuplehash[1].tuple;
 
 	nf_ct_offload_timeout(flow->ct);
 
@@ -493,12 +496,12 @@ void nf_flow_snat_port(const struct flow_offload *flow,
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
 		port = hdr->source;
-		new_port = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.dst_port;
+		new_port = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->dst_port;
 		hdr->source = new_port;
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
 		port = hdr->dest;
-		new_port = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.src_port;
+		new_port = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->src_port;
 		hdr->dest = new_port;
 		break;
 	}
@@ -519,12 +522,12 @@ void nf_flow_dnat_port(const struct flow_offload *flow, struct sk_buff *skb,
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
 		port = hdr->dest;
-		new_port = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.src_port;
+		new_port = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->src_port;
 		hdr->dest = new_port;
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
 		port = hdr->source;
-		new_port = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.dst_port;
+		new_port = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->dst_port;
 		hdr->source = new_port;
 		break;
 	}
@@ -581,8 +584,8 @@ static void nf_flow_table_do_cleanup(struct nf_flowtable *flow_table,
 	}
 
 	if (net_eq(nf_ct_net(flow->ct), dev_net(dev)) &&
-	    (flow->tuplehash[0].tuple.iifidx == dev->ifindex ||
-	     flow->tuplehash[1].tuple.iifidx == dev->ifindex))
+	    (flow->tuple[0]->iifidx == dev->ifindex ||
+	     flow->tuple[1]->iifidx == dev->ifindex))
 		flow_offload_teardown(flow);
 }
 

@@ -180,6 +180,7 @@ enum flow_offload_type {
 
 struct flow_offload {
 	struct flow_offload_tuple_rhash		tuplehash[FLOW_OFFLOAD_DIR_MAX];
+	struct flow_offload_tuple		*tuple[FLOW_OFFLOAD_DIR_MAX];
 	struct nf_conn				*ct;
 	unsigned long				flags;
 	u16					type;

@@ -86,12 +86,12 @@ static void nf_flow_snat_ip(const struct flow_offload *flow,
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
 		addr = iph->saddr;
-		new_addr = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.dst_v4.s_addr;
+		new_addr = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->dst_v4.s_addr;
 		iph->saddr = new_addr;
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
 		addr = iph->daddr;
-		new_addr = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.src_v4.s_addr;
+		new_addr = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->src_v4.s_addr;
 		iph->daddr = new_addr;
 		break;
 	}
@@ -109,12 +109,12 @@ static void nf_flow_dnat_ip(const struct flow_offload *flow,
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
 		addr = iph->daddr;
-		new_addr = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.src_v4.s_addr;
+		new_addr = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->src_v4.s_addr;
 		iph->daddr = new_addr;
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
 		addr = iph->saddr;
-		new_addr = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.dst_v4.s_addr;
+		new_addr = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->dst_v4.s_addr;
 		iph->saddr = new_addr;
 		break;
 	}
@@ -302,12 +302,12 @@ static bool nf_flow_skb_encap_protocol(const struct sk_buff *skb, __be16 proto,
 }
 
 static void nf_flow_encap_pop(struct sk_buff *skb,
-			      struct flow_offload_tuple_rhash *tuplehash)
+			      struct flow_offload_tuple *flow_tuple)
 {
 	struct vlan_hdr *vlan_hdr;
 	int i;
 
-	for (i = 0; i < tuplehash->tuple.encap_num; i++) {
+	for (i = 0; i < flow_tuple->encap_num; i++) {
 		if (skb_vlan_tag_present(skb)) {
 			__vlan_hwaccel_clear_tag(skb);
 			continue;
@@ -329,18 +329,18 @@ static void nf_flow_encap_pop(struct sk_buff *skb,
 }
 
 static unsigned int nf_flow_queue_xmit(struct net *net, struct sk_buff *skb,
-				       const struct flow_offload_tuple_rhash *tuplehash,
+				       const struct flow_offload_tuple *flow_tuple,
 				       unsigned short type)
 {
 	struct net_device *outdev;
 
-	outdev = dev_get_by_index_rcu(net, tuplehash->tuple.out.ifidx);
+	outdev = dev_get_by_index_rcu(net, flow_tuple->out.ifidx);
 	if (!outdev)
 		return NF_DROP;
 
 	skb->dev = outdev;
-	dev_hard_header(skb, skb->dev, type, tuplehash->tuple.out.h_dest,
-			tuplehash->tuple.out.h_source, skb->len);
+	dev_hard_header(skb, skb->dev, type, flow_tuple->out.h_dest,
+			flow_tuple->out.h_source, skb->len);
 	dev_queue_xmit(skb);
 
 	return NF_STOLEN;
@@ -534,7 +534,7 @@ __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 	dir = tuplehash->tuple.dir;
 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
 
-	mtu = flow->tuplehash[dir].tuple.mtu + offset;
+	mtu = flow->tuple[dir]->mtu + offset;
 	if (unlikely(nf_flow_exceeds_mtu(skb, mtu)))
 		return 0;
 
@@ -543,9 +543,9 @@ __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 	if (nf_flow_state_check(flow, iph->protocol, skb, thoff))
 		return 0;
 
-	if (!nf_flow_dst_check(&tuplehash->tuple)) {
+	if (!nf_flow_dst_check(flow->tuple[dir])) {
 		flow_offload_teardown(flow);
-		return NF_ACCEPT;
+		return 0;
 	}
 
 	if (skb_try_make_writable(skb, thoff + hdrsize))
@@ -559,7 +559,7 @@ __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 
 	flow_offload_refresh(flow_table, flow);
 
-	nf_flow_encap_pop(skb, tuplehash);
+	nf_flow_encap_pop(skb, flow->tuple[dir]);
 	thoff -= offset;
 
 	iph = ip_hdr(skb);
@@ -569,7 +569,7 @@ __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 	skb->tstamp = 0;
 
 	if (flow_table->flags & NF_FLOWTABLE_COUNTER)
-		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);
+		nf_ct_acct_update(flow->ct, dir, skb->len);
 
 	return 1;
 }
@@ -945,24 +945,28 @@ nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 
 	if (unlikely(tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_XFRM)) {
 		rt = (struct rtable *)tuplehash->tuple.dst_cache;
+=======
+	if (unlikely(flow->tuple[dir]->xmit_type == FLOW_OFFLOAD_XMIT_XFRM)) {
+		rt = (struct rtable *)flow->tuple[dir]->dst_cache;
+>>>>>>> cfbf39175896... netfilter: flowtable: prepare for tunneling support
 		memset(skb->cb, 0, sizeof(struct inet_skb_parm));
 		IPCB(skb)->iif = skb->dev->ifindex;
 		IPCB(skb)->flags = IPSKB_FORWARDED;
 		return nf_flow_xmit_xfrm(skb, state, &rt->dst);
 	}
 
-	switch (tuplehash->tuple.xmit_type) {
+	switch (flow->tuple[dir]->xmit_type) {
 	case FLOW_OFFLOAD_XMIT_NEIGH:
-		rt = (struct rtable *)tuplehash->tuple.dst_cache;
+		rt = (struct rtable *)flow->tuple[dir]->dst_cache;
 		outdev = rt->dst.dev;
 		skb->dev = outdev;
-		nexthop = rt_nexthop(rt, flow->tuplehash[!dir].tuple.src_v4.s_addr);
+		nexthop = rt_nexthop(rt, flow->tuple[!dir]->src_v4.s_addr);
 		skb_dst_set_noref(skb, &rt->dst);
 		neigh_xmit(NEIGH_ARP_TABLE, outdev, &nexthop, skb);
 		ret = NF_STOLEN;
 		break;
 	case FLOW_OFFLOAD_XMIT_DIRECT:
-		ret = nf_flow_queue_xmit(state->net, skb, tuplehash, ETH_P_IP);
+		ret = nf_flow_queue_xmit(state->net, skb, flow->tuple[dir], ETH_P_IP);
 		if (ret == NF_DROP)
 			flow_offload_teardown(flow);
 		break;
@@ -1023,12 +1027,12 @@ static void nf_flow_snat_ipv6(const struct flow_offload *flow,
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
 		addr = ip6h->saddr;
-		new_addr = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.dst_v6;
+		new_addr = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->dst_v6;
 		ip6h->saddr = new_addr;
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
 		addr = ip6h->daddr;
-		new_addr = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.src_v6;
+		new_addr = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->src_v6;
 		ip6h->daddr = new_addr;
 		break;
 	}
@@ -1046,12 +1050,12 @@ static void nf_flow_dnat_ipv6(const struct flow_offload *flow,
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
 		addr = ip6h->daddr;
-		new_addr = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.src_v6;
+		new_addr = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->src_v6;
 		ip6h->daddr = new_addr;
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
 		addr = ip6h->saddr;
-		new_addr = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.dst_v6;
+		new_addr = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->dst_v6;
 		ip6h->saddr = new_addr;
 		break;
 	}
@@ -1153,7 +1157,7 @@ nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 	dir = tuplehash->tuple.dir;
 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
 
-	mtu = flow->tuplehash[dir].tuple.mtu + offset;
+	mtu = flow->tuple[dir]->mtu + offset;
 	if (unlikely(nf_flow_exceeds_mtu(skb, mtu)))
 		return NF_ACCEPT;
 
@@ -1162,7 +1166,7 @@ nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 	if (nf_flow_state_check(flow, ip6h->nexthdr, skb, thoff))
 		return NF_ACCEPT;
 
-	if (!nf_flow_dst_check(&tuplehash->tuple)) {
+	if (!nf_flow_dst_check(flow->tuple[dir])) {
 		flow_offload_teardown(flow);
 		return NF_ACCEPT;
 	}
@@ -1172,7 +1176,7 @@ nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 
 	flow_offload_refresh(flow_table, flow);
 
-	nf_flow_encap_pop(skb, tuplehash);
+	nf_flow_encap_pop(skb, flow->tuple[dir]);
 
 	ip6h = ipv6_hdr(skb);
 	nf_flow_nat_ipv6(flow, skb, dir, ip6h);
@@ -1181,28 +1185,28 @@ nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 	skb->tstamp = 0;
 
 	if (flow_table->flags & NF_FLOWTABLE_COUNTER)
-		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);
+		nf_ct_acct_update(flow->ct, dir, skb->len);
 
-	if (unlikely(tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_XFRM)) {
-		rt = (struct rt6_info *)tuplehash->tuple.dst_cache;
+	if (unlikely(flow->tuple[dir]->xmit_type == FLOW_OFFLOAD_XMIT_XFRM)) {
+		rt = (struct rt6_info *)flow->tuple[dir]->dst_cache;
 		memset(skb->cb, 0, sizeof(struct inet6_skb_parm));
 		IP6CB(skb)->iif = skb->dev->ifindex;
 		IP6CB(skb)->flags = IP6SKB_FORWARDED;
 		return nf_flow_xmit_xfrm(skb, state, &rt->dst);
 	}
 
-	switch (tuplehash->tuple.xmit_type) {
+	switch (flow->tuple[dir]->xmit_type) {
 	case FLOW_OFFLOAD_XMIT_NEIGH:
-		rt = (struct rt6_info *)tuplehash->tuple.dst_cache;
+		rt = (struct rt6_info *)flow->tuple[dir]->dst_cache;
 		outdev = rt->dst.dev;
 		skb->dev = outdev;
-		nexthop = rt6_nexthop(rt, &flow->tuplehash[!dir].tuple.src_v6);
+		nexthop = rt6_nexthop(rt, &flow->tuple[!dir]->src_v6);
 		skb_dst_set_noref(skb, &rt->dst);
 		neigh_xmit(NEIGH_ND_TABLE, outdev, nexthop, skb);
 		ret = NF_STOLEN;
 		break;
 	case FLOW_OFFLOAD_XMIT_DIRECT:
-		ret = nf_flow_queue_xmit(state->net, skb, tuplehash, ETH_P_IPV6);
+		ret = nf_flow_queue_xmit(state->net, skb, flow->tuple[dir], ETH_P_IPV6);
 		if (ret == NF_DROP)
 			flow_offload_teardown(flow);
 		break;

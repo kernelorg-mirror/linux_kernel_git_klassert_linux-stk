@@ -222,14 +222,14 @@ static int flow_offload_eth_src(struct net *net,
 	u32 mask, val;
 	u16 val16;
 
-	this_tuple = &flow->tuplehash[dir].tuple;
+	this_tuple = flow->tuple[dir];
 
 	switch (this_tuple->xmit_type) {
 	case FLOW_OFFLOAD_XMIT_DIRECT:
 		addr = this_tuple->out.h_source;
 		break;
 	case FLOW_OFFLOAD_XMIT_NEIGH:
-		other_tuple = &flow->tuplehash[!dir].tuple;
+		other_tuple = flow->tuple[!dir];
 		dev = dev_get_by_index(net, other_tuple->iifidx);
 		if (!dev)
 			return -ENOENT;
@@ -272,14 +272,14 @@ static int flow_offload_eth_dst(struct net *net,
 	u8 nud_state;
 	u16 val16;
 
-	this_tuple = &flow->tuplehash[dir].tuple;
+	this_tuple = flow->tuple[dir];
 
 	switch (this_tuple->xmit_type) {
 	case FLOW_OFFLOAD_XMIT_DIRECT:
 		ether_addr_copy(ha, this_tuple->out.h_dest);
 		break;
 	case FLOW_OFFLOAD_XMIT_NEIGH:
-		other_tuple = &flow->tuplehash[!dir].tuple;
+		other_tuple = flow->tuple[!dir];
 		daddr = &other_tuple->src_v4;
 		dst_cache = this_tuple->dst_cache;
 		n = dst_neigh_lookup(dst_cache, daddr);
@@ -325,11 +325,11 @@ static void flow_offload_ipv4_snat(struct net *net,
 
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
-		addr = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.dst_v4.s_addr;
+		addr = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->dst_v4.s_addr;
 		offset = offsetof(struct iphdr, saddr);
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
-		addr = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.src_v4.s_addr;
+		addr = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->src_v4.s_addr;
 		offset = offsetof(struct iphdr, daddr);
 		break;
 	default:
@@ -352,11 +352,11 @@ static void flow_offload_ipv4_dnat(struct net *net,
 
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
-		addr = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.src_v4.s_addr;
+		addr = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->src_v4.s_addr;
 		offset = offsetof(struct iphdr, daddr);
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
-		addr = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.dst_v4.s_addr;
+		addr = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->dst_v4.s_addr;
 		offset = offsetof(struct iphdr, saddr);
 		break;
 	default:
@@ -392,11 +392,11 @@ static void flow_offload_ipv6_snat(struct net *net,
 
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
-		addr = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.dst_v6.s6_addr32;
+		addr = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->dst_v6.s6_addr32;
 		offset = offsetof(struct ipv6hdr, saddr);
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
-		addr = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.src_v6.s6_addr32;
+		addr = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->src_v6.s6_addr32;
 		offset = offsetof(struct ipv6hdr, daddr);
 		break;
 	default:
@@ -417,11 +417,11 @@ static void flow_offload_ipv6_dnat(struct net *net,
 
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
-		addr = flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.src_v6.s6_addr32;
+		addr = flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->src_v6.s6_addr32;
 		offset = offsetof(struct ipv6hdr, daddr);
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
-		addr = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.dst_v6.s6_addr32;
+		addr = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->dst_v6.s6_addr32;
 		offset = offsetof(struct ipv6hdr, saddr);
 		break;
 	default:
@@ -433,7 +433,7 @@ static void flow_offload_ipv6_dnat(struct net *net,
 
 static int flow_offload_l4proto(const struct flow_offload *flow)
 {
-	u8 protonum = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.l4proto;
+	u8 protonum = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->l4proto;
 	u8 type = 0;
 
 	switch (protonum) {
@@ -461,13 +461,13 @@ static void flow_offload_port_snat(struct net *net,
 
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
-		port = ntohs(flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.dst_port);
+		port = ntohs(flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->dst_port);
 		offset = 0; /* offsetof(struct tcphdr, source); */
 		port = htonl(port << 16);
 		mask = ~htonl(0xffff0000);
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
-		port = ntohs(flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.src_port);
+		port = ntohs(flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->src_port);
 		offset = 0; /* offsetof(struct tcphdr, dest); */
 		port = htonl(port);
 		mask = ~htonl(0xffff);
@@ -491,13 +491,13 @@ static void flow_offload_port_dnat(struct net *net,
 
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
-		port = ntohs(flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.src_port);
+		port = ntohs(flow->tuple[FLOW_OFFLOAD_DIR_REPLY]->src_port);
 		offset = 0; /* offsetof(struct tcphdr, dest); */
 		port = htonl(port);
 		mask = ~htonl(0xffff);
 		break;
 	case FLOW_OFFLOAD_DIR_REPLY:
-		port = ntohs(flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.dst_port);
+		port = ntohs(flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->dst_port);
 		offset = 0; /* offsetof(struct tcphdr, source); */
 		port = htonl(port << 16);
 		mask = ~htonl(0xffff0000);
@@ -514,8 +514,8 @@ static void flow_offload_ipv4_checksum(struct net *net,
 				       const struct flow_offload *flow,
 				       struct nf_flow_rule *flow_rule)
 {
-	u8 protonum = flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.l4proto;
 	struct flow_action_entry *entry = flow_action_entry_next(flow_rule);
+	u8 protonum = flow->tuple[FLOW_OFFLOAD_DIR_ORIGINAL]->l4proto;
 
 	entry->id = FLOW_ACTION_CSUM;
 	entry->csum_flags = TCA_CSUM_UPDATE_FLAG_IPV4HDR;
@@ -540,14 +540,14 @@ static void flow_offload_redirect(struct net *net,
 	struct net_device *dev;
 	int ifindex;
 
-	this_tuple = &flow->tuplehash[dir].tuple;
+	this_tuple = flow->tuple[dir];
 	switch (this_tuple->xmit_type) {
 	case FLOW_OFFLOAD_XMIT_DIRECT:
-		this_tuple = &flow->tuplehash[dir].tuple;
+		this_tuple = flow->tuple[dir];
 		ifindex = this_tuple->out.hw_ifidx;
 		break;
 	case FLOW_OFFLOAD_XMIT_NEIGH:
-		other_tuple = &flow->tuplehash[!dir].tuple;
+		other_tuple = flow->tuple[!dir];
 		ifindex = other_tuple->iifidx;
 		break;
 	default:
@@ -571,7 +571,7 @@ static void flow_offload_encap_tunnel(const struct flow_offload *flow,
 	struct flow_action_entry *entry;
 	struct dst_entry *dst;
 
-	this_tuple = &flow->tuplehash[dir].tuple;
+	this_tuple = flow->tuple[dir];
 	if (this_tuple->xmit_type == FLOW_OFFLOAD_XMIT_DIRECT)
 		return;
 
@@ -596,7 +596,7 @@ static void flow_offload_decap_tunnel(const struct flow_offload *flow,
 	struct flow_action_entry *entry;
 	struct dst_entry *dst;
 
-	other_tuple = &flow->tuplehash[!dir].tuple;
+	other_tuple = flow->tuple[!dir];
 	if (other_tuple->xmit_type == FLOW_OFFLOAD_XMIT_DIRECT)
 		return;
 
@@ -628,7 +628,7 @@ nf_flow_rule_route_common(struct net *net, const struct flow_offload *flow,
 	    flow_offload_eth_dst(net, flow, dir, flow_rule) < 0)
 		return -1;
 
-	tuple = &flow->tuplehash[dir].tuple;
+	tuple = flow->tuple[dir];
 
 	for (i = 0; i < tuple->encap_num; i++) {
 		struct flow_action_entry *entry;
@@ -642,7 +642,7 @@ nf_flow_rule_route_common(struct net *net, const struct flow_offload *flow,
 		}
 	}
 
-	other_tuple = &flow->tuplehash[!dir].tuple;
+	other_tuple = flow->tuple[!dir];
 
 	for (i = 0; i < other_tuple->encap_num; i++) {
 		struct flow_action_entry *entry;
@@ -741,8 +741,8 @@ nf_flow_offload_rule_alloc(struct net *net,
 	flow_rule->rule->match.mask = &flow_rule->match.mask;
 	flow_rule->rule->match.key = &flow_rule->match.key;
 
-	tuple = &flow->tuplehash[dir].tuple;
-	other_tuple = &flow->tuplehash[!dir].tuple;
+	tuple = flow->tuple[dir];
+	other_tuple = flow->tuple[!dir];
 	if (other_tuple->xmit_type == FLOW_OFFLOAD_XMIT_NEIGH)
 		other_dst = other_tuple->dst_cache;
 
@@ -836,7 +836,7 @@ static int nf_flow_offload_tuple(struct nf_flowtable *flowtable,
 	int err, i = 0;
 
 	nf_flow_offload_init(&cls_flow, proto, priority, cmd,
-			     &flow->tuplehash[dir].tuple, &extack);
+			     flow->tuple[dir], &extack);
 	if (cmd == FLOW_CLS_REPLACE)
 		cls_flow.rule = flow_rule->rule;
 
