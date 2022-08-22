@@ -343,6 +343,37 @@ ipip_tunnel_ctl(struct net_device *dev, struct ip_tunnel_parm *p, int cmd)
 	return ip_tunnel_ctl(dev, p, cmd);
 }
 
+static int ipip_fill_forward_path(struct net_device_path_ctx *ctx,
+				  struct net_device_path *path)
+{
+	struct ip_tunnel *tunnel = netdev_priv(ctx->dev);
+	const struct iphdr *tiph = &tunnel->parms.iph;
+	struct net *net = dev_net(ctx->dev);
+	struct dst_entry *dst;
+	struct flowi4 fl4;
+	struct rtable *rt;
+
+	ip_tunnel_init_flow(&fl4, tiph->protocol, tiph->daddr, tiph->saddr,
+			    tunnel->parms.o_key, RT_TOS(tiph->tos),
+			    tunnel->parms.link, tunnel->fwmark, 0);
+
+	rt = ip_route_output_key(net, &fl4);
+	if (IS_ERR(rt))
+		return -1;
+
+	dst = &rt->dst;
+	path->type = DEV_PATH_TUNNEL;
+	path->tun.l3proto = AF_INET;
+	path->tun.l4proto = IPPROTO_IPIP; // tiph->protocol; is zero
+	path->tun.ip.saddr = tiph->saddr;
+	path->tun.ip.daddr = tiph->daddr;
+	path->tun.dst = dst;
+	path->dev = ctx->dev;
+	ctx->dev = dst->dev;
+
+	return 0;
+}
+
 static const struct net_device_ops ipip_netdev_ops = {
 	.ndo_init       = ipip_tunnel_init,
 	.ndo_uninit     = ip_tunnel_uninit,
@@ -352,6 +383,7 @@ static const struct net_device_ops ipip_netdev_ops = {
 	.ndo_get_stats64 = dev_get_tstats64,
 	.ndo_get_iflink = ip_tunnel_get_iflink,
 	.ndo_tunnel_ctl	= ipip_tunnel_ctl,
+	.ndo_fill_forward_path = ipip_fill_forward_path,
 };
 
 #define IPIP_FEATURES (NETIF_F_SG |		\

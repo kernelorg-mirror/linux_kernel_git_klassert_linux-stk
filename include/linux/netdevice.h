@@ -849,7 +849,10 @@ enum net_device_path_type {
 	DEV_PATH_BRIDGE,
 	DEV_PATH_PPPOE,
 	DEV_PATH_DSA,
+	DEV_PATH_TUNNEL,
 };
+
+struct iphdr;
 
 struct net_device_path {
 	enum net_device_path_type	type;
@@ -874,6 +877,15 @@ struct net_device_path {
 			int port;
 			u16 proto;
 		} dsa;
+		struct {
+			u8		l3proto;
+			u8		l4proto;
+			struct {
+				__be32	saddr;
+				__be32	daddr;
+			} ip;
+			struct dst_entry        *dst;
+		} tun;
 	};
 };
 
