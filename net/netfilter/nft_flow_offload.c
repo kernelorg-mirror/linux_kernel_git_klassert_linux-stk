@@ -90,7 +90,8 @@ static bool nft_is_valid_ether_device(const struct net_device *dev)
 
 static void nft_dev_path_info(const struct net_device_path_stack *stack,
 			      struct nft_forward_info *info,
-			      unsigned char *ha, struct nf_flowtable *flowtable)
+			      unsigned char *ha, struct nf_flowtable *flowtable,
+			      struct nf_flow_route *route, int dir)
 {
 	const struct net_device_path *path;
 	int i;
@@ -147,6 +148,14 @@ static void nft_dev_path_info(const struct net_device_path_stack *stack,
 			}
 			info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
 			break;
+		case DEV_PATH_TUNNEL:
+			route->tuple[!dir].in.tunnel = 1;
+			route->tuple[!dir].in.tun.l3proto = path->tun.l3proto;
+			route->tuple[!dir].in.tun.ip.saddr = path->tun.ip.daddr;
+			route->tuple[!dir].in.tun.ip.daddr = path->tun.ip.saddr;
+			route->tuple[!dir].in.tun.l4proto = path->tun.l4proto;
+			dst_release(path->tun.dst);
+			break;
 		default:
 			info->indev = NULL;
 			break;
@@ -191,7 +200,7 @@ static void nft_dev_forward_path(struct nf_flow_route *route,
 	int i;
 
 	if (nft_dev_fill_forward_path(route, dst, ct, dir, ha, &stack) >= 0)
-		nft_dev_path_info(&stack, &info, ha, &ft->data);
+		nft_dev_path_info(&stack, &info, ha, &ft->data, route, dir);
 
 	if (!info.indev || !nft_flowtable_find_dev(info.indev, ft))
 		return;
@@ -203,6 +212,9 @@ static void nft_dev_forward_path(struct nf_flow_route *route,
 	}
 	route->tuple[!dir].in.num_encaps = info.num_encaps;
 	route->tuple[!dir].in.ingress_vlans = info.ingress_vlans;
+
+	if (route->tuple[!dir].in.tunnel)
+		route->tuple[!dir].in.tun.ifindex = info.indev->ifindex;
 
 	if (info.xmit_type == FLOW_OFFLOAD_XMIT_DIRECT) {
 		memcpy(route->tuple[dir].out.h_source, info.h_source, ETH_ALEN);

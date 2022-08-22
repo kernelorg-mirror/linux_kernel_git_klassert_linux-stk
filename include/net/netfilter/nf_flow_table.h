@@ -139,9 +139,10 @@ struct flow_offload_tuple {
 	/* All members above are keys for lookups, see flow_offload_hash(). */
 	struct { }			__hash;
 
-	u8				dir:2,
+	u16				dir:2,
 					xmit_type:2,
 					encap_num:2,
+					inner:1,
 					in_vlan_ingress:2;
 	u16				mtu;
 	union {
@@ -155,6 +156,9 @@ struct flow_offload_tuple {
 			u8		h_source[ETH_ALEN];
 			u8		h_dest[ETH_ALEN];
 		} out;
+		struct {
+			struct flow_offload_tuple *inner;
+		} tun;
 	};
 };
 
@@ -181,6 +185,7 @@ enum flow_offload_type {
 struct flow_offload {
 	struct flow_offload_tuple_rhash		tuplehash[FLOW_OFFLOAD_DIR_MAX];
 	struct flow_offload_tuple		*tuple[FLOW_OFFLOAD_DIR_MAX];
+	struct flow_offload_tuple		*inner_tuple;
 	struct nf_conn				*ct;
 	unsigned long				flags;
 	u16					type;
@@ -208,7 +213,17 @@ struct nf_flow_route {
 				__be16		proto;
 			} encap[NF_FLOW_TABLE_ENCAP_MAX];
 			u8			num_encaps:2,
-						ingress_vlans:2;
+						ingress_vlans:2,
+						tunnel:1;
+			struct {
+				int		ifindex;
+				u8		l3proto;
+				u8		l4proto;
+				struct {
+					__be32	saddr;
+					__be32	daddr;
+				} ip;
+			} tun;
 		} in;
 		struct {
 			u32			ifindex;

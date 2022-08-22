@@ -90,11 +90,24 @@ static int flow_offload_fill_route(struct flow_offload *flow,
 				   const struct nf_flow_route *route,
 				   enum flow_offload_tuple_dir dir)
 {
-	struct flow_offload_tuple *flow_tuple = flow->tuple[dir];
 	struct dst_entry *dst = route->tuple[dir].dst;
+	struct flow_offload_tuple *flow_tuple;
 	int i, j = 0;
+	u8 l3proto;
 
-	switch (flow_tuple->l3proto) {
+	if (route->tuple[dir].in.tunnel) {
+		flow->inner_tuple = kzalloc(sizeof(*flow->inner_tuple), GFP_ATOMIC);
+		if (!flow->inner_tuple)
+			return -1;
+
+		flow_tuple = flow->inner_tuple;
+		l3proto = AF_INET;
+	} else {
+		flow_tuple = &flow->tuplehash[dir].tuple;
+		l3proto = flow_tuple->l3proto;
+	}
+
+	switch (l3proto) {
 	case NFPROTO_IPV4:
 		flow_tuple->mtu = ip_dst_mtu_maybe_forward(dst, true);
 		break;
@@ -135,6 +148,28 @@ static int flow_offload_fill_route(struct flow_offload *flow,
 		break;
 	}
 	flow_tuple->xmit_type = route->tuple[dir].xmit_type;
+
+	if (route->tuple[dir].in.tunnel) {
+		flow_tuple = &flow->tuplehash[dir].tuple;
+		flow_tuple->inner = 1;
+		flow_tuple->dir = dir;
+		flow_tuple->iifidx = route->tuple[dir].in.tun.ifindex;
+
+		switch (route->tuple[dir].in.tun.l3proto) {
+		case NFPROTO_IPV4:
+			flow_tuple->src_v4.s_addr = route->tuple[dir].in.tun.ip.saddr;
+			flow_tuple->dst_v4.s_addr = route->tuple[dir].in.tun.ip.daddr;
+			break;
+		case NFPROTO_IPV6:
+			break;
+		}
+
+		flow_tuple->l3proto = route->tuple[dir].in.tun.l3proto;
+		flow_tuple->l4proto = route->tuple[dir].in.tun.l4proto;
+		flow_tuple->src_port = 0;
+		flow_tuple->dst_port = 0;
+		flow_tuple->tun.inner = flow->inner_tuple;
+	}
 
 	return 0;
 }
@@ -221,6 +256,7 @@ void flow_offload_free(struct flow_offload *flow)
 	default:
 		break;
 	}
+	kfree(flow->inner_tuple);
 	nf_ct_put(flow->ct);
 	kfree_rcu(flow, rcu_head);
 }
@@ -302,7 +338,10 @@ int flow_offload_add(struct nf_flowtable *flow_table, struct flow_offload *flow)
 	}
 
 	flow->tuple[0] = &flow->tuplehash[0].tuple;
-	flow->tuple[1] = &flow->tuplehash[1].tuple;
+	if (flow->inner_tuple)
+		flow->tuple[1] = flow->inner_tuple;
+	else
+		flow->tuple[1] = &flow->tuplehash[1].tuple;
 
 	nf_ct_offload_timeout(flow->ct);
 

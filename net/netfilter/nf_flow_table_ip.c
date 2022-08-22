@@ -175,6 +175,7 @@ static int nf_flow_tuple_ip(struct sk_buff *skb, const struct net_device *dev,
 	struct flow_ports *ports;
 	unsigned int thoff;
 	struct iphdr *iph;
+	u8 ipproto;
 
 	if (!pskb_may_pull(skb, sizeof(*iph) + offset))
 		return 0;
@@ -188,7 +189,8 @@ static int nf_flow_tuple_ip(struct sk_buff *skb, const struct net_device *dev,
 
 	thoff += offset;
 
-	switch (iph->protocol) {
+	ipproto = iph->protocol;
+	switch (ipproto) {
 	case IPPROTO_TCP:
 		*hdrsize = sizeof(struct tcphdr);
 		break;
@@ -197,6 +199,9 @@ static int nf_flow_tuple_ip(struct sk_buff *skb, const struct net_device *dev,
 		break;
 	case IPPROTO_ESP:
 		*hdrsize = sizeof(struct ip_esp_hdr);
+		break;
+	case IPPROTO_IPIP:
+		*hdrsize = 0;
 		break;
 	default:
 		return 0;
@@ -215,13 +220,18 @@ static int nf_flow_tuple_ip(struct sk_buff *skb, const struct net_device *dev,
 		return 2;
 	}
 
+	switch (ipproto) {
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+		ports = (struct flow_ports *)(skb_network_header(skb) + thoff);
+		tuple->src_port		= ports->source;
+		tuple->dst_port		= ports->dest;
+		break;
+	}
 	iph = (struct iphdr *)(skb_network_header(skb) + offset);
-	ports = (struct flow_ports *)(skb_network_header(skb) + thoff);
 
 	tuple->src_v4.s_addr	= iph->saddr;
 	tuple->dst_v4.s_addr	= iph->daddr;
-	tuple->src_port		= ports->source;
-	tuple->dst_port		= ports->dest;
 	tuple->l3proto		= AF_INET;
 	tuple->l4proto		= iph->protocol;
 	tuple->iifidx		= dev->ifindex;
@@ -301,8 +311,9 @@ static bool nf_flow_skb_encap_protocol(const struct sk_buff *skb, __be16 proto,
 	return false;
 }
 
-static void nf_flow_encap_pop(struct sk_buff *skb,
-			      struct flow_offload_tuple *flow_tuple)
+static int nf_flow_encap_pop(struct sk_buff *skb,
+			     struct flow_offload_tuple *flow_tuple,
+			     struct flow_offload_tuple *tun_tuple)
 {
 	struct vlan_hdr *vlan_hdr;
 	int i;
@@ -326,6 +337,15 @@ static void nf_flow_encap_pop(struct sk_buff *skb,
 			break;
 		}
 	}
+
+	if (tun_tuple) {
+		if (iptunnel_pull_header(skb, sizeof(struct iphdr), htons(ETH_P_IP), false) < 0)
+			return -1;
+
+		skb_reset_network_header(skb);
+	}
+
+	return 0;
 }
 
 static unsigned int nf_flow_queue_xmit(struct net *net, struct sk_buff *skb,
@@ -503,9 +523,9 @@ unsigned int
 __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 			const struct nf_hook_state *state)
 {
+	struct flow_offload_tuple tuple = {}, *tun_tuple = NULL;
 	struct flow_offload_tuple_rhash *tuplehash;
 	struct nf_flowtable *flow_table = priv;
-	struct flow_offload_tuple tuple = {};
 	enum flow_offload_tuple_dir dir;
 	struct flow_offload *flow;
 	u32 hdrsize, offset = 0;
@@ -535,6 +555,12 @@ __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
 
 	mtu = flow->tuple[dir]->mtu + offset;
+
+	if (tuplehash->tuple.inner) {
+		offset += sizeof(struct iphdr);
+		tun_tuple = &tuplehash->tuple;
+	}
+
 	if (unlikely(nf_flow_exceeds_mtu(skb, mtu)))
 		return 0;
 
@@ -557,9 +583,11 @@ __nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 	memset(skb->cb, 0, sizeof(struct nft_bulk_cb));
 	NFT_BULK_CB(skb)->tuplehash = tuplehash;
 
+	if (nf_flow_encap_pop(skb, flow->tuple[dir], tun_tuple) < 0)
+		return NF_DROP;
+
 	flow_offload_refresh(flow_table, flow);
 
-	nf_flow_encap_pop(skb, flow->tuple[dir]);
 	thoff -= offset;
 
 	iph = ip_hdr(skb);
@@ -1130,9 +1158,9 @@ unsigned int
 nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 			  const struct nf_hook_state *state)
 {
+	struct flow_offload_tuple tuple = {}, *tun_tuple = NULL;
 	struct flow_offload_tuple_rhash *tuplehash;
 	struct nf_flowtable *flow_table = priv;
-	struct flow_offload_tuple tuple = {};
 	enum flow_offload_tuple_dir dir;
 	const struct in6_addr *nexthop;
 	struct flow_offload *flow;
@@ -1158,6 +1186,12 @@ nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
 
 	mtu = flow->tuple[dir]->mtu + offset;
+
+	if (tuplehash->tuple.inner) {
+		offset += sizeof(struct iphdr);
+		tun_tuple = &tuplehash->tuple;
+	}
+
 	if (unlikely(nf_flow_exceeds_mtu(skb, mtu)))
 		return NF_ACCEPT;
 
@@ -1174,9 +1208,10 @@ nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 	if (skb_try_make_writable(skb, thoff + hdrsize))
 		return NF_DROP;
 
-	flow_offload_refresh(flow_table, flow);
+	if (nf_flow_encap_pop(skb, flow->tuple[dir], tun_tuple) < 0)
+		return NF_DROP;
 
-	nf_flow_encap_pop(skb, flow->tuple[dir]);
+	flow_offload_refresh(flow_table, flow);
 
 	ip6h = ipv6_hdr(skb);
 	nf_flow_nat_ipv6(flow, skb, dir, ip6h);
