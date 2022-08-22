@@ -1023,12 +1023,8 @@ nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 
 	tuplehash = NFT_BULK_CB(skb)->tuplehash;
 
-	if (unlikely(tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_XFRM)) {
-		rt = (struct rtable *)tuplehash->tuple.dst_cache;
-=======
 	if (unlikely(flow->tuple[dir]->xmit_type == FLOW_OFFLOAD_XMIT_XFRM)) {
 		rt = (struct rtable *)flow->tuple[dir]->dst_cache;
->>>>>>> cfbf39175896... netfilter: flowtable: prepare for tunneling support
 		memset(skb->cb, 0, sizeof(struct inet_skb_parm));
 		IPCB(skb)->iif = skb->dev->ifindex;
 		IPCB(skb)->flags = IPSKB_FORWARDED;
