@@ -1012,6 +1012,7 @@ nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 	struct flow_offload *flow;
 	struct net_device *outdev;
 	struct rtable *rt;
+	struct iphdr *iph;
 	__be32 nexthop;
 	int ret;
 
@@ -1035,6 +1036,7 @@ nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 	case FLOW_OFFLOAD_XMIT_NEIGH:
 		rt = (struct rtable *)flow->tuple[dir]->dst_cache;
 		if (flow->tuple[dir]->tunnel_num) {
+			iph = ip_hdr(skb);
 			ret = nf_flow_tunnel_add(state->net, skb, flow, dir, rt, iph);
 			if (ret < 0) {
 				ret = NF_DROP;
