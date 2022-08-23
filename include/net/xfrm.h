@@ -583,6 +583,7 @@ struct xfrm_bulk_skb_cb {
 	/* Unused, aligned with iif in inet_skb_parm and inet6_skb_parm */
 	int	iif;
 	int	err;
+	struct xfrm_state *x;
 };
 #define XFRM_BULK_SKB_CB(__skb) ((struct xfrm_bulk_skb_cb *)&((__skb)->cb[0]))
 
