@@ -49,14 +49,13 @@ struct inet_skb_parm {
 	u16			flags;
 
 #define IPSKB_FORWARDED		BIT(0)
-#define IPSKB_XFRM_TUNNEL_SIZE	BIT(1)
-#define IPSKB_XFRM_TRANSFORMED	BIT(2)
-#define IPSKB_FRAG_COMPLETE	BIT(3)
-#define IPSKB_REROUTED		BIT(4)
-#define IPSKB_DOREDIRECT	BIT(5)
-#define IPSKB_FRAG_PMTU		BIT(6)
-#define IPSKB_L3SLAVE		BIT(7)
-#define IPSKB_NOPOLICY		BIT(8)
+#define IPSKB_XFRM_TRANSFORMED	BIT(1)
+#define IPSKB_FRAG_COMPLETE	BIT(2)
+#define IPSKB_REROUTED		BIT(3)
+#define IPSKB_DOREDIRECT	BIT(4)
+#define IPSKB_FRAG_PMTU		BIT(5)
+#define IPSKB_L3SLAVE		BIT(6)
+#define IPSKB_NOPOLICY		BIT(7)
 
 	u16			frag_max_size;
 };

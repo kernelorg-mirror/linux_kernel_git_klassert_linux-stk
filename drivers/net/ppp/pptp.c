@@ -219,7 +219,7 @@ static int pptp_xmit(struct ppp_channel *chan, struct sk_buff *skb)
 	skb_push(skb, sizeof(*iph));
 	skb_reset_network_header(skb);
 	memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
-	IPCB(skb)->flags &= ~(IPSKB_XFRM_TUNNEL_SIZE | IPSKB_XFRM_TRANSFORMED | IPSKB_REROUTED);
+	IPCB(skb)->flags &= ~(IPSKB_XFRM_TRANSFORMED | IPSKB_REROUTED);
 
 	iph =	ip_hdr(skb);
 	iph->version =	4;

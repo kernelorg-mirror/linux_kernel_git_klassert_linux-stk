@@ -409,7 +409,6 @@ static int xfrm4_prepare_output(struct xfrm_state *x, struct sk_buff *skb)
 	if (err)
 		return err;
 
-	IPCB(skb)->flags |= IPSKB_XFRM_TUNNEL_SIZE;
 	skb->protocol = htons(ETH_P_IP);
 
 	switch (x->outer_mode.encap) {
@@ -778,9 +777,6 @@ EXPORT_SYMBOL_GPL(xfrm_output);
 static int xfrm4_tunnel_check_size(struct sk_buff *skb)
 {
 	int mtu, ret = 0;
-
-	if (IPCB(skb)->flags & IPSKB_XFRM_TUNNEL_SIZE)
-		goto out;
 
 	if (!(ip_hdr(skb)->frag_off & htons(IP_DF)) || skb->ignore_df)
 		goto out;
