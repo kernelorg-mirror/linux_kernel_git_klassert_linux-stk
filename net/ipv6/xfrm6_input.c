@@ -63,6 +63,8 @@ int xfrm6_transport_finish(struct sk_buff *skb, int async)
 		return 0;
 	}
 
+	memset(IP6CB(skb), 0, sizeof(*IP6CB(skb)));
+
 	NF_HOOK(NFPROTO_IPV6, NF_INET_PRE_ROUTING,
 		dev_net(skb->dev), NULL, skb, skb->dev, NULL,
 		xfrm6_transport_finish2);

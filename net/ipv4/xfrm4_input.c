@@ -68,6 +68,8 @@ int xfrm4_transport_finish(struct sk_buff *skb, int async)
 		return 0;
 	}
 
+	memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
+
 	NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
 		dev_net(skb->dev), NULL, skb, skb->dev, NULL,
 		xfrm4_rcv_encap_finish);
