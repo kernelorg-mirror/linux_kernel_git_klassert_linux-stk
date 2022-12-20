@@ -605,11 +605,6 @@ void xfrm_unregister_km(struct xfrm_mgr *km);
 
 struct xfrm_tunnel_skb_cb {
 	union {
-		struct inet_skb_parm h4;
-		struct inet6_skb_parm h6;
-	} header;
-
-	union {
 		struct ip_tunnel *ip4;
 		struct ip6_tnl *ip6;
 	} tunnel;
