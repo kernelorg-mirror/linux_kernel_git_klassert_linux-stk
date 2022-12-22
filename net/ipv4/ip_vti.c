@@ -58,7 +58,7 @@ static int vti_input(struct sk_buff *skb, int nexthdr, __be32 spi,
 		if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb))
 			goto drop;
 
-		XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4 = tunnel;
+		XFRM_INPUT_SKB_CB(skb)->tunnel.ip4 = tunnel;
 
 		if (update_skb_dev)
 			skb->dev = tunnel->dev;
@@ -80,8 +80,8 @@ static int vti_input_proto(struct sk_buff *skb, int nexthdr, __be32 spi,
 
 static int vti_rcv(struct sk_buff *skb, __be32 spi, bool update_skb_dev)
 {
-	XFRM_SPI_SKB_CB(skb)->family = AF_INET;
-	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
+	XFRM_INPUT_SKB_CB(skb)->family = AF_INET;
+	XFRM_INPUT_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
 
 	return vti_input(skb, ip_hdr(skb)->protocol, spi, 0, update_skb_dev);
 }
@@ -97,7 +97,7 @@ static int vti_rcv_cb(struct sk_buff *skb, int err)
 	struct net_device *dev;
 	struct xfrm_state *x;
 	const struct xfrm_mode *inner_mode;
-	struct ip_tunnel *tunnel = XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4;
+	struct ip_tunnel *tunnel = XFRM_INPUT_SKB_CB(skb)->tunnel.ip4;
 	u32 orig_mark = skb->mark;
 	int ret;
 
@@ -473,8 +473,8 @@ static struct xfrm4_protocol vti_ipcomp4_protocol __read_mostly = {
 #if IS_ENABLED(CONFIG_INET_XFRM_TUNNEL)
 static int vti_rcv_tunnel(struct sk_buff *skb)
 {
-	XFRM_SPI_SKB_CB(skb)->family = AF_INET;
-	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
+	XFRM_INPUT_SKB_CB(skb)->family = AF_INET;
+	XFRM_INPUT_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
 
 	return vti_input(skb, IPPROTO_IPIP, ip_hdr(skb)->saddr, 0, false);
 }

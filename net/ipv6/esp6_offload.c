@@ -106,11 +106,11 @@ static struct sk_buff *esp6_gro_receive(struct list_head *head,
 	if (!nhoff)
 		goto out;
 
-	IP6CB(skb)->nhoff = nhoff;
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = NULL;
-	XFRM_SPI_SKB_CB(skb)->family = AF_INET6;
-	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
-	XFRM_SPI_SKB_CB(skb)->seq = seq;
+	XFRM_SKB_CB(skb)->nhoff = nhoff;
+	XFRM_INPUT_SKB_CB(skb)->tunnel.ip6 = NULL;
+	XFRM_INPUT_SKB_CB(skb)->family = AF_INET6;
+	XFRM_INPUT_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
+	XFRM_SKB_CB(skb)->seq.input.low = seq;
 
 	/* We don't need to handle errors from xfrm_input, it does all
 	 * the error handling and frees the resources on error. */

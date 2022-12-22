@@ -324,9 +324,10 @@ static int vti6_input_proto(struct sk_buff *skb, int nexthdr, __be32 spi,
 
 		rcu_read_unlock();
 
-		XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = t;
-		XFRM_SPI_SKB_CB(skb)->family = AF_INET6;
-		XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
+		XFRM_SKB_CB(skb)->nhoff = IP6CB(skb)->nhoff;
+		XFRM_INPUT_SKB_CB(skb)->tunnel.ip6 = t;
+		XFRM_INPUT_SKB_CB(skb)->family = AF_INET6;
+		XFRM_INPUT_SKB_CB(skb)->daddroff = offsetof(struct ipv6hdr, daddr);
 		return xfrm_input(skb, nexthdr, spi, encap_type);
 	}
 	rcu_read_unlock();
@@ -349,7 +350,7 @@ static int vti6_rcv_cb(struct sk_buff *skb, int err)
 	struct net_device *dev;
 	struct xfrm_state *x;
 	const struct xfrm_mode *inner_mode;
-	struct ip6_tnl *t = XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6;
+	struct ip6_tnl *t = XFRM_INPUT_SKB_CB(skb)->tunnel.ip6;
 	u32 orig_mark = skb->mark;
 	int ret;
 

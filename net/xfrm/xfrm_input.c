@@ -522,21 +522,19 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 			goto drop;
 		}
 
+
+		seq = XFRM_SKB_CB(skb)->seq.input.low;
 		family = x->outer_mode.family;
 
 		/* An encap_type of -1 indicates async resumption. */
 		if (encap_type  < 0) {
 			async = 1;
-			seq = XFRM_SKB_CB(skb)->seq.input.low;
 			goto resume;
 		} else {
 			/* GRO call */
-			seq = XFRM_SPI_SKB_CB(skb)->seq;
 
 			if (xo && (xo->flags & CRYPTO_DONE)) {
 				crypto_done = true;
-				family = XFRM_SPI_SKB_CB(skb)->family;
-
 
 				err = xfrm_input_check_offload(net, skb, x, xo);
 				if (err)
@@ -552,17 +550,17 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 		goto lock;
 	}
 
-	family = XFRM_SPI_SKB_CB(skb)->family;
+	family = XFRM_INPUT_SKB_CB(skb)->family;
 
 	/* if tunnel is present override skb->mark value with tunnel i_key */
 	switch (family) {
 	case AF_INET:
-		if (XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4)
-			mark = be32_to_cpu(XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4->parms.i_key);
+		if (XFRM_INPUT_SKB_CB(skb)->tunnel.ip4)
+			mark = be32_to_cpu(XFRM_INPUT_SKB_CB(skb)->tunnel.ip4->parms.i_key);
 		break;
 	case AF_INET6:
-		if (XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6)
-			mark = be32_to_cpu(XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6->parms.i_key);
+		if (XFRM_INPUT_SKB_CB(skb)->tunnel.ip6)
+			mark = be32_to_cpu(XFRM_INPUT_SKB_CB(skb)->tunnel.ip6->parms.i_key);
 		break;
 	}
 
@@ -580,7 +578,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 	}
 
 	daddr = (xfrm_address_t *)(skb_network_header(skb) +
-				   XFRM_SPI_SKB_CB(skb)->daddroff);
+				   XFRM_INPUT_SKB_CB(skb)->daddroff);
 	do {
 		sp = skb_sec_path(skb);
 

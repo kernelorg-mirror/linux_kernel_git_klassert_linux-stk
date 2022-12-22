@@ -603,23 +603,12 @@ struct xfrm_mgr {
 void xfrm_register_km(struct xfrm_mgr *km);
 void xfrm_unregister_km(struct xfrm_mgr *km);
 
-struct xfrm_tunnel_skb_cb {
-	union {
-		struct ip_tunnel *ip4;
-		struct ip6_tnl *ip6;
-	} tunnel;
-};
-
-#define XFRM_TUNNEL_SKB_CB(__skb) ((struct xfrm_tunnel_skb_cb *)&((__skb)->cb[0]))
-
 /*
  * This structure is used for the duration where packets are being
  * transformed by IPsec.  As soon as the packet leaves IPsec the
  * area beyond the generic IP part may be overwritten.
  */
 struct xfrm_skb_cb {
-	struct xfrm_tunnel_skb_cb header;
-
         /* Sequence number for replay protection. */
 	union {
 		struct {
@@ -631,6 +620,8 @@ struct xfrm_skb_cb {
 			__be32 hi;
 		} input;
 	} seq;
+
+	__u16 nhoff;
 };
 
 #define XFRM_SKB_CB(__skb) ((struct xfrm_skb_cb *)&((__skb)->cb[0]))
@@ -640,7 +631,7 @@ struct xfrm_skb_cb {
  * to transmit header information to the mode input/output functions.
  */
 struct xfrm_mode_skb_cb {
-	struct xfrm_tunnel_skb_cb header;
+	struct xfrm_skb_cb header;
 
 	/* Copied from header for IPv4, always set to zero and DF for IPv6. */
 	__be16 id;
@@ -671,15 +662,18 @@ struct xfrm_mode_skb_cb {
  * This structure is used by the input processing to locate the SPI and
  * related information.
  */
-struct xfrm_spi_skb_cb {
-	struct xfrm_tunnel_skb_cb header;
+struct xfrm_input_skb_cb {
+	struct xfrm_skb_cb header;
 
 	unsigned int daddroff;
 	unsigned int family;
-	__be32 seq;
+	union {
+		struct ip_tunnel *ip4;
+		struct ip6_tnl *ip6;
+	} tunnel;
 };
 
-#define XFRM_SPI_SKB_CB(__skb) ((struct xfrm_spi_skb_cb *)&((__skb)->cb[0]))
+#define XFRM_INPUT_SKB_CB(__skb) ((struct xfrm_input_skb_cb *)&((__skb)->cb[0]))
 
 #ifdef CONFIG_AUDITSYSCALL
 static inline struct audit_buffer *xfrm_audit_start(const char *op)
@@ -1666,9 +1660,9 @@ int xfrm4_rcv(struct sk_buff *skb);
 
 static inline int xfrm4_rcv_spi(struct sk_buff *skb, int nexthdr, __be32 spi)
 {
-	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4 = NULL;
-	XFRM_SPI_SKB_CB(skb)->family = AF_INET;
-	XFRM_SPI_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
+	XFRM_INPUT_SKB_CB(skb)->tunnel.ip4 = NULL;
+	XFRM_INPUT_SKB_CB(skb)->family = AF_INET;
+	XFRM_INPUT_SKB_CB(skb)->daddroff = offsetof(struct iphdr, daddr);
 	return xfrm_input(skb, nexthdr, spi, 0);
 }
 
@@ -2101,11 +2095,11 @@ static inline int xfrm_tunnel_check(struct sk_buff *skb, struct xfrm_state *x,
 
 	switch(family) {
 	case AF_INET:
-		if (XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4)
+		if (XFRM_INPUT_SKB_CB(skb)->tunnel.ip4)
 			tunnel = true;
 		break;
 	case AF_INET6:
-		if (XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6)
+		if (XFRM_INPUT_SKB_CB(skb)->tunnel.ip6)
 			tunnel = true;
 		break;
 	}
