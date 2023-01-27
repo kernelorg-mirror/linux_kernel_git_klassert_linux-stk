@@ -673,6 +673,7 @@ static int xfrm_input_loop(struct net *net, struct sk_buff *skb,
 	int async = 0;
 	bool xfrm_gro = false;
 	bool crypto_done = false;
+	bool bulk = false;
 	struct xfrm_offload *xo = xfrm_offload(skb);
 
 	/* An encap_type of -2 indicates reconstructed inner packet */
@@ -691,8 +692,12 @@ static int xfrm_input_loop(struct net *net, struct sk_buff *skb,
 
 	seq = XFRM_SPI_SKB_CB(skb)->seq;
 
-	if (xo && (xo->flags & XFRM_GRO || encap_type == 0 || encap_type == UDP_ENCAP_ESPINUDP)) {
+	if (encap_type < 0 || (xo && (xo->flags & XFRM_GRO || encap_type == 0 || encap_type == UDP_ENCAP_ESPINUDP))) {
 		family = x->outer_mode.family;
+		if (encap_type == -3) {
+			bulk = true;
+			encap_type = 0;
+		}
 		goto lock;
 	}
 
@@ -776,6 +781,9 @@ lock:
 
 		XFRM_SKB_CB(skb)->seq.input.low = seq;
 		XFRM_SKB_CB(skb)->seq.input.hi = seq_hi;
+
+		if (bulk)
+			return 0;
 
 		if (crypto_done) {
 			nexthdr = x->type_offload->input_tail(x, skb);
