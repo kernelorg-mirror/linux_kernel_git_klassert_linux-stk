@@ -709,7 +709,7 @@ int __xfrm_state_delete(struct xfrm_state *x)
 	if (x->km.state != XFRM_STATE_DEAD) {
 		x->km.state = XFRM_STATE_DEAD;
 
-		spin_unlock(&net->xfrm.xfrm_state_lock);
+		spin_lock(&net->xfrm.xfrm_state_lock);
 		list_del(&x->km.all);
 		hlist_del_rcu(&x->bydst);
 		hlist_del_rcu(&x->bysrc);
