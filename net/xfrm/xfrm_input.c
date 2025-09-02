@@ -588,6 +588,77 @@ drop:
 }
 EXPORT_SYMBOL(xfrm_input);
 
+int xfrm_input_list(struct sk_buff **skbp, int nexthdr, __be32 spi, int encap_type)
+{
+	struct sk_buff *skb2, *nskb;
+	struct sk_buff *skb = *skbp;
+	struct net *net = dev_net(skb->dev);
+	int err;
+	__be32 seq;
+	struct xfrm_state *x = NULL;
+	unsigned int family;
+	struct list_head head;
+
+	x = xfrm_input_state(skb);
+
+	if (unlikely(x->km.state != XFRM_STATE_VALID)) {
+		if (x->km.state == XFRM_STATE_ACQ)
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMACQUIREERROR);
+		else
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEINVALID);
+
+		goto drop;
+	}
+
+	family = x->outer_mode.family;
+	seq = XFRM_SKB_CB(skb)->seq.input.low;
+
+	INIT_LIST_HEAD(&head);
+	skb_list_walk_safe(skb, skb2, nskb) {
+
+		skb_mark_not_on_list(skb2);
+
+		err = xfrm_input_loop(net, skb2, x, x->id.spi, nexthdr, encap_type);
+		if (err) {
+			xfrm_rcv_cb(skb2, family, x && x->type ? x->type->proto : nexthdr, -1);
+			kfree_skb(skb2);
+			continue;
+		}
+
+		list_add_tail(&skb2->list, &head);
+	}
+
+	x->type->input_list(x, &head);
+
+	if (list_empty(&head))
+		return 0;
+
+	list_for_each_entry_safe(skb, nskb, &head, list) {
+		nexthdr = XFRM_MODE_SKB_CB(skb)->protocol;
+
+		XFRM_BULK_SKB_CB(skb)->x = x;
+
+		err = xfrm_input_loop(net, skb, x, x->id.spi, nexthdr, -1);
+		if (err) {
+			skb_list_del_init(skb);
+			xfrm_rcv_cb(skb, family, x && x->type ? x->type->proto : nexthdr, -1);
+			kfree_skb(skb);
+			continue;
+		}
+	}
+
+	/* XXX: Recursive call! */
+	netif_receive_skb_list(&head);
+	return 0;
+
+drop:
+	skb_list_walk_safe(skb, skb2, nskb)
+		xfrm_rcv_cb(skb2, family, x && x->type ? x->type->proto : nexthdr, -1);
+	kfree_skb_list(skb);
+	return 0;
+}
+EXPORT_SYMBOL(xfrm_input_list);
+
 static int xfrm_input_loop(struct net *net, struct sk_buff *skb,
 			   struct xfrm_state *x, __be32 spi, int nexthdr,
 			   int encap_type)
