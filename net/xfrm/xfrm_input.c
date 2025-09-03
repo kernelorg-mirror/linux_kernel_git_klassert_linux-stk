@@ -711,8 +711,7 @@ resume_decapped:
 		daddr = &x->id.daddr;
 		family = x->props.family;
 
-		err = xfrm_parse_spi(skb, nexthdr, &spi, &seq);
-		if (err < 0) {
+		if (xfrm_parse_spi(skb, nexthdr, &spi, &seq)) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINHDRERROR);
 			goto drop;
 		}
