@@ -905,6 +905,14 @@ struct sk_buff *xfrm_output_list(struct sk_buff *skb)
 
 		spin_unlock(&x->lock);
 
+		/* XXX: Do this only on async transformations! */
+		skb_dst_force(iter);
+		if (!skb_dst(iter)) {
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+			kfree_skb(iter);
+			continue;
+		}
+
 		/* Inner headers are invalid now. */
 		iter->encapsulation = 0;
 
@@ -922,28 +930,9 @@ struct sk_buff *xfrm_output_list(struct sk_buff *skb)
 		skb_list_del_init(skb);
 
 		if (XFRM_BULK_SKB_CB(skb)->err) {
-
-			if (XFRM_BULK_SKB_CB(skb)->err == -EINPROGRESS) {
-
-				/* Theory of operation: This is exclusively used in
-				 * the forwarding path, so BHs are off and async crypto
-				 * resumption can't happen before BHs are enabled. This
-				 * means that we can still modify the skb. OK?
-				 */
-				skb_dst_force(skb);
-				if (!skb_dst(skb)) {
-					/* skb leak here? */
-					XFRM_BULK_SKB_CB(skb)->err = -ENOMEM;
-					continue;
-				}
-
-				XFRM_BULK_SKB_CB(skb)->err = 0;
-				continue;
-			} else {
-				XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
-				kfree_skb(skb);
-				continue;
-			}
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+			kfree_skb(skb);
+			continue;
 		}
 
 		dst = skb_dst_pop_noref(skb);
