@@ -588,7 +588,7 @@ drop:
 }
 EXPORT_SYMBOL(xfrm_input);
 
-int xfrm_input_list(struct sk_buff **skbp, int nexthdr, __be32 spi, int encap_type)
+void xfrm_input_list(struct sk_buff **skbp, struct list_head *head, int nexthdr)
 {
 	struct sk_buff *skb2, *nskb;
 	struct sk_buff *skb = *skbp;
@@ -597,7 +597,7 @@ int xfrm_input_list(struct sk_buff **skbp, int nexthdr, __be32 spi, int encap_ty
 	__be32 seq;
 	struct xfrm_state *x = NULL;
 	unsigned int family;
-	struct list_head head;
+//	struct list_head head;
 
 	x = xfrm_input_state(skb);
 
@@ -613,27 +613,27 @@ int xfrm_input_list(struct sk_buff **skbp, int nexthdr, __be32 spi, int encap_ty
 	family = x->outer_mode.family;
 	seq = XFRM_SKB_CB(skb)->seq.input.low;
 
-	INIT_LIST_HEAD(&head);
+//	INIT_LIST_HEAD(&head);
 	skb_list_walk_safe(skb, skb2, nskb) {
 
 		skb_mark_not_on_list(skb2);
 
-		err = xfrm_input_loop(net, skb2, x, x->id.spi, nexthdr, encap_type);
+		err = xfrm_input_loop(net, skb2, x, x->id.spi, nexthdr, -3);
 		if (err) {
 			xfrm_rcv_cb(skb2, family, x && x->type ? x->type->proto : nexthdr, -1);
 			kfree_skb(skb2);
 			continue;
 		}
 
-		list_add_tail(&skb2->list, &head);
+		list_add_tail(&skb2->list, head);
 	}
 
-	x->type->input_list(x, &head);
+	x->type->input_list(x, head);
 
-	if (list_empty(&head))
-		return 0;
+	if (list_empty(head))
+		return;
 
-	list_for_each_entry_safe(skb, nskb, &head, list) {
+	list_for_each_entry_safe(skb, nskb, head, list) {
 		nexthdr = XFRM_MODE_SKB_CB(skb)->protocol;
 
 		XFRM_BULK_SKB_CB(skb)->x = x;
@@ -648,14 +648,14 @@ int xfrm_input_list(struct sk_buff **skbp, int nexthdr, __be32 spi, int encap_ty
 	}
 
 	/* XXX: Recursive call! */
-	netif_receive_skb_list(&head);
-	return 0;
+//	netif_receive_skb_list(&head);
+	return;
 
 drop:
 	skb_list_walk_safe(skb, skb2, nskb)
 		xfrm_rcv_cb(skb2, family, x && x->type ? x->type->proto : nexthdr, -1);
 	kfree_skb_list(skb);
-	return 0;
+	return;
 }
 EXPORT_SYMBOL(xfrm_input_list);
 

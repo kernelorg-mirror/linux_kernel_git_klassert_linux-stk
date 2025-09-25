@@ -620,22 +620,19 @@ static void nf_flow_neigh_xmit_list(struct sk_buff *skb, struct net_device *outd
 	}
 }
 
-void __nf_flow_offload_ip_hook_list(void *priv, struct list_head *head,
-				    const struct net_device *in)
+static void __nf_flow_offload_tuplehash(struct nf_flowtable *flow_table,
+					struct list_head *head,
+					struct list_head *bulk_list,
+					struct list_head *acc_list,
+					struct list_head *esp_list,
+					struct sec_path *sp)
 {
 	struct flow_offload_tuple_rhash *tuplehash;
-	struct nf_flowtable *flow_table = priv;
 	struct nf_flowtable_ctx ctx = {
 		.in	= in,
 	};
 	struct sk_buff *skb, *n;
-	struct neighbour *neigh;
-	LIST_HEAD(bulk_head);
-	LIST_HEAD(bulk_list);
-	LIST_HEAD(acc_list);
-	LIST_HEAD(esp_list);
-	struct rtable *rt;
-	int ret;
+	struct sec_path *sp2;
 
 	list_for_each_entry_safe(skb, n, head, list) {
 		skb_list_del_init(skb);
@@ -650,6 +647,17 @@ void __nf_flow_offload_ip_hook_list(void *priv, struct list_head *head,
 		}
 
 		if (tuplehash->flags & FLOW_OFFLOAD_TUNNEL) {
+			/* We offload just one ESP transformation per round. */
+			if (sp) {
+				if (!secpath_exists(skb)) {
+					sp2 = secpath_set(skb);
+					sp2->xvec[sp->len++] = sp->xvec[sp->len];
+				}
+
+				list_add_tail(&skb->list, &acc_list);
+				continue;
+			}
+
 			/* nf_flow_encap_pop() and set transport header. */
 			skb_dst_set_noref(skb, tuplehash->tuple.dst_cache);
 			memset(skb->cb, 0, sizeof(struct nft_bulk_cb));
@@ -673,6 +681,27 @@ void __nf_flow_offload_ip_hook_list(void *priv, struct list_head *head,
 		list_add_tail(&skb->list, &bulk_list);
 	}
 
+}
+
+void __nf_flow_offload_ip_hook_list(void *priv, struct list_head *head,
+				    const struct net_device *in)
+{
+	struct flow_offload_tuple_rhash *tuplehash;
+	struct nf_flowtable *flow_table = priv;
+	struct sec_path *sp = NULL;
+	struct sk_buff *skb, *n;
+	struct neighbour *neigh;
+	LIST_HEAD(bulk_head);
+	LIST_HEAD(bulk_list);
+	LIST_HEAD(acc_list);
+	LIST_HEAD(esp_list);
+	struct rtable *rt;
+	int ret;
+
+	/* FIXME: Combine the onstack lists into one struct! */
+	__nf_flow_offload_tuplehash(flow_table, head, &bulk_list, &acc_list,
+				    &esp_list, sp);
+
 	list_for_each_entry_safe(skb, n, &esp_list, list) {
 		skb_list_del_init(skb);
 		memset(skb->cb, 0, sizeof(struct nft_bulk_cb));
@@ -682,17 +711,20 @@ void __nf_flow_offload_ip_hook_list(void *priv, struct list_head *head,
 	}
 
 	list_for_each_entry_safe(skb, n, &bulk_head, list) {
-
 		list_del_init(&skb->list);
+
+		if (!sp)
+			sp = skb_sec_path(skb);
 
 		skb->next = skb_shinfo(skb)->frag_list;
 		skb_shinfo(skb)->frag_list = NULL;
 
-		ret = xfrm_input_list(&skb, IPPROTO_ESP, 0, -3);
-		/* Returns always 0 */
-	}
+		xfrm_input_list(&skb, head, IPPROTO_ESP);
 
-	/*XXX: fwd policy check */
+		/* FIXME: Combine the onstack lists into one struct! */
+		__nf_flow_offload_tuplehash(flow_table, head, &bulk_list,
+					    &acc_list, &esp_list, sp);
+	}
 
 	list_splice_init(&acc_list, head);
 
@@ -1320,8 +1352,7 @@ void __nf_flow_offload_ipv6_hook_list(void *priv, struct list_head *head,
 		skb->next = skb_shinfo(skb)->frag_list;
 		skb_shinfo(skb)->frag_list = NULL;
 
-		ret = xfrm_input_list(&skb, IPPROTO_ESP, 0, -3);
-		/* Returns always 0 */
+		xfrm_input_list(&skb, IPPROTO_ESP);
 	}
 
 	list_splice_init(&acc_list, head);

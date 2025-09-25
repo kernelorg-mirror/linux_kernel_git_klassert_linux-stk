@@ -1789,7 +1789,7 @@ u32 xfrm_state_mtu(struct xfrm_state *x, int mtu);
 int __xfrm_init_state(struct xfrm_state *x, struct netlink_ext_ack *extack);
 int xfrm_init_state(struct xfrm_state *x);
 int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type);
-int xfrm_input_list(struct sk_buff **skb, int nexthdr, __be32 spi, int encap_type);
+void xfrm_input_list(struct sk_buff **skb, struct list_head *head, int nexthdr);
 int xfrm_input_resume(struct sk_buff *skb, int nexthdr);
 int xfrm_trans_queue_net(struct net *net, struct sk_buff *skb,
 			 int (*finish)(struct net *, struct sock *,

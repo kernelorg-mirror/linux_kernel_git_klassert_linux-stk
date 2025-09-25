@@ -1001,11 +1001,14 @@ int esp_input_done2(struct sk_buff *skb, int err)
 {
 	struct xfrm_offload *xo;
 	struct xfrm_state *x;
+	struct sec_path *sp;
 
-	if (!secpath_exists(skb))
-		x = XFRM_BULK_SKB_CB(skb)->x;
-	else
-		x = xfrm_input_state(skb);
+	if (!secpath_exists(skb)) {
+		sp = secpath_set(skb);
+		sp->xvec[sp->len++] = XFRM_BULK_SKB_CB(skb)->x;
+	}
+
+	x = xfrm_input_state(skb);
 
 	xo = xfrm_offload(skb);
 	if (!xo || !(xo->flags & CRYPTO_DONE))
