@@ -222,7 +222,7 @@ static int __init eesp4_init(void)
 		pr_info("%s: can't add xfrm type\n", __func__);
 		return -EAGAIN;
 	}
-	if (xfrm4_protocol_register(&eesp4_protocol, IPPROTO_ESP) < 0) {
+	if (xfrm4_protocol_register(&eesp4_protocol, IPPROTO_EESP) < 0) {
 		pr_info("%s: can't add protocol\n", __func__);
 		xfrm_unregister_type(&eesp_type, AF_INET);
 		return -EAGAIN;

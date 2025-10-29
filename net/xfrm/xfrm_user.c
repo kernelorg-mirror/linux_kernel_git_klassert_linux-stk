@@ -319,6 +319,7 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 		break;
 
 	case IPPROTO_ESP:
+	case IPPROTO_EESP:
 		if (attrs[XFRMA_ALG_COMP]) {
 			NL_SET_ERR_MSG(extack, "Invalid attribute for ESP: COMP");
 			goto out;
