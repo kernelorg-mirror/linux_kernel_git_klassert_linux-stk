@@ -103,6 +103,23 @@ config INET6_ESPINTCP
 
 	  If unsure, say N.
 
+config INET6_EESP
+	tristate "IPv6: EESP transformation"
+	select XFRM_EESP
+	help
+	  Support for IPsec EESP (Enhanced Encapsulating Security Payload).
+
+	  FIXME:
+	  ESP can be used with various encryption and authentication algorithms.
+	  Besides enabling ESP support itself, this option enables the generic
+	  implementations of the algorithms that RFC 8221 lists as MUST be
+	  implemented.  If you need any other algorithms, you'll need to enable
+	  them in the crypto API.  You should also enable accelerated
+	  implementations of any needed algorithms when available.
+
+	  If unsure, say Y.
+
+
 config INET6_IPCOMP
 	tristate "IPv6: IPComp transformation"
 	select INET6_XFRM_TUNNEL

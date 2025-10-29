@@ -33,6 +33,7 @@
 #include <net/snmp.h>
 #endif
 
+#define XFRM_PROTO_EESP		49
 #define XFRM_PROTO_ESP		50
 #define XFRM_PROTO_AH		51
 #define XFRM_PROTO_COMP		108
@@ -411,6 +412,7 @@ struct xfrm_state_afinfo {
 
 	const struct xfrm_type_offload *type_offload_esp;
 
+	const struct xfrm_type		*type_eesp;
 	const struct xfrm_type		*type_esp;
 	const struct xfrm_type		*type_ipip;
 	const struct xfrm_type		*type_ipip6;

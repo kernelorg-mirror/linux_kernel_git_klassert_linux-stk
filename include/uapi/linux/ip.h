@@ -124,6 +124,46 @@ struct ip_esp_hdr {
 	__u8  enc_data[];	/* Variable len but >=8. Mind the 64 bit alignment! */
 };
 
+struct ip_eesp_hdr {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u8 optlen;
+	__u8 one:1,
+	     version:4,
+	     reserved:3;
+#elif defined (__BIG_ENDIAN_BITFIELD)
+	__u8 one:1,
+	     version:4,
+	     reserved:3;
+	__u8 optlen;
+#else
+#error	"Please fix <asm/byteorder.h>"
+#endif
+
+	__be16 session_id;
+	__be32 spi;
+};
+
+struct ip_eesp_peer_hdr {
+	__be64 seq_no;
+	__be64 iv;
+};
+
+struct ip_eesp_pyld_hdr {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u8 reserved1:4,
+	     zero:4;
+#elif defined (__BIG_ENDIAN_BITFIELD)
+	__u8 zero:4,
+	     reserved1:4;
+#else
+#error	"Please fix <asm/byteorder.h>"
+#endif
+
+	__u8 reserved2;
+	__u8 nexthdr;
+	__u8 padlen;
+};
+
 struct ip_comp_hdr {
 	__u8 nexthdr;
 	__u8 flags;

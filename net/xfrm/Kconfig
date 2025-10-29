@@ -103,6 +103,21 @@ config XFRM_ESP
 	select CRYPTO_SEQIV
 	select CRYPTO_SHA256
 
+# This option selects XFRM_ALGO along with the EESP encryption and authentication
+# algorithms that RFC 8221 lists as MUST be implemented.
+config XFRM_EESP
+	tristate
+	select XFRM_ALGO
+	select CRYPTO
+	select CRYPTO_AES
+	select CRYPTO_AUTHENC
+	select CRYPTO_CBC
+	select CRYPTO_ECHAINIV
+	select CRYPTO_GCM
+	select CRYPTO_HMAC
+	select CRYPTO_SEQIV
+	select CRYPTO_SHA256
+
 config XFRM_IPCOMP
 	tristate
 	select XFRM_ALGO

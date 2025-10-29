@@ -340,6 +340,9 @@ retry:
 	case IPPROTO_AH:
 		type = afinfo->type_ah;
 		break;
+	case IPPROTO_EESP:
+		type = afinfo->type_eesp;
+		break;
 	case IPPROTO_ESP:
 		type = afinfo->type_esp;
 		break;
