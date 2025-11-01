@@ -55,8 +55,10 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	unsigned int ivsize = 8;
 	int err;
 
-	if (req->cryptlen < ivsize)
+	if (req->cryptlen < ivsize) {
+		printk("exit 1\n");
 		return -EINVAL;
+	}
 
 	aead_request_set_tfm(subreq, ctx->child);
 
@@ -91,6 +93,7 @@ static int seqiv_aead_encrypt(struct aead_request *req)
 	err = crypto_aead_encrypt(subreq);
 	if (unlikely(info != req->iv))
 		seqiv_aead_encrypt_complete2(req, err);
+	printk("seqiv_aead_encrypt err %d\n", err);
 	return err;
 }
 
@@ -103,8 +106,10 @@ static int seqiv_aead_decrypt(struct aead_request *req)
 	void *data;
 	unsigned int ivsize = 8;
 
-	if (req->cryptlen < ivsize + crypto_aead_authsize(geniv))
+	if (req->cryptlen < ivsize + crypto_aead_authsize(geniv)) {
+		printk("exit 2\n");
 		return -EINVAL;
+	}
 
 	aead_request_set_tfm(subreq, ctx->child);
 
@@ -132,8 +137,10 @@ static int seqiv_aead_create(struct crypto_template *tmpl, struct rtattr **tb)
 		return PTR_ERR(inst);
 
 	err = -EINVAL;
-	if (inst->alg.ivsize != sizeof(u64))
+	if (inst->alg.ivsize != sizeof(u64)) {
+		printk("exit 3\n");
 		goto free_inst;
+	}
 
 	inst->alg.encrypt = seqiv_aead_encrypt;
 	inst->alg.decrypt = seqiv_aead_decrypt;
@@ -149,6 +156,7 @@ static int seqiv_aead_create(struct crypto_template *tmpl, struct rtattr **tb)
 free_inst:
 		inst->free(inst);
 	}
+	printk("seqiv_aead_create err %d\n", err);
 	return err;
 }
 

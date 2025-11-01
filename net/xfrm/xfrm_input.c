@@ -156,6 +156,11 @@ int xfrm_parse_spi(struct sk_buff *skb, u8 nexthdr, __be32 *spi, __be32 *seq)
 		offset = offsetof(struct ip_esp_hdr, spi);
 		offset_seq = offsetof(struct ip_esp_hdr, seq_no);
 		break;
+	case IPPROTO_EESP:
+		hlen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr);
+		offset = offsetof(struct ip_eesp_hdr, spi);
+		offset_seq = sizeof(struct ip_eesp_hdr) + offsetof(struct ip_eesp_peer_hdr, seq_no);
+		break;
 	case IPPROTO_COMP:
 		if (!pskb_may_pull(skb, sizeof(struct ip_comp_hdr)))
 			return -EINVAL;
@@ -257,6 +262,7 @@ static int xfrm4_remove_tunnel_encap(struct xfrm_state *x, struct sk_buff *skb)
 	err = 0;
 
 out:
+	printk("xfrm4_remove_tunnel_encap: err %d\n", err);
 	return err;
 }
 
@@ -355,6 +361,7 @@ xfrm_inner_mode_encap_remove(struct xfrm_state *x,
 			return xfrm6_remove_tunnel_encap(x, skb);
 		break;
 		}
+		printk("xfrm_inner_mode_encap_remove: -EINVAL\n");
 		return -EINVAL;
 	}
 
@@ -642,6 +649,7 @@ lock:
 
 		if (xfrm_tunnel_check(skb, x, family)) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEMODEERROR);
+			printk("LINUX_MIB_XFRMINSTATEMODEERROR 1: err %d\n", err);
 			goto drop;
 		}
 
@@ -696,6 +704,7 @@ resume:
 			return 0;
 		else if (err) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEMODEERROR);
+			printk("LINUX_MIB_XFRMINSTATEMODEERROR: err %d\n", err);
 			goto drop;
 		}
 resume_decapped:

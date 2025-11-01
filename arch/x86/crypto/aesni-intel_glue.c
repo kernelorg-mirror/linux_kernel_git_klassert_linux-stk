@@ -1149,6 +1149,7 @@ static int common_rfc4106_set_authsize(struct crypto_aead *aead,
 	case 16:
 		break;
 	default:
+		printk("common_rfc4106_set_authsize: -EINVAL\n");
 		return -EINVAL;
 	}
 
@@ -1348,8 +1349,10 @@ gcm_crypt(struct aead_request *req, int flags)
 	/* Initialize the counter and determine the associated data length. */
 	le_ctr[0] = 2;
 	if (flags & FLAG_RFC4106) {
-		if (unlikely(assoclen != 16 && assoclen != 20))
-			return -EINVAL;
+//		if (unlikely(assoclen != 16 && assoclen != 20)) {
+//			printk("aesni gcm_crypt -EINVAL assoclen %d\n", assoclen);
+//			return -EINVAL;
+//		}
 		assoclen -= 8;
 		le_ctr[1] = get_unaligned_be32(req->iv + 4);
 		le_ctr[2] = get_unaligned_be32(req->iv + 0);
@@ -1437,6 +1440,7 @@ gcm_crypt(struct aead_request *req, int flags)
 	kernel_fpu_end();
 	if (nbytes)
 		skcipher_walk_done(&walk, 0);
+	printk("gcm_crypt: err %d\n", err);
 	return err;
 }
 

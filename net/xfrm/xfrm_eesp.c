@@ -392,6 +392,7 @@ cow:
 
 skip_cow:
 	/* Fill padding... */
+//	memset(tail, 0, eesp->plen);
 	memset(tail, 0, eesp->plen);
 	pskb_put(skb, trailer, tailen);
 
@@ -415,11 +416,12 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 	struct scatterlist *sg, *dsg;
 	int err = -ENOMEM;
 
-	assoclen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr);
-
 	aead = x->data;
-	alen = crypto_aead_authsize(aead);
 	ivlen = crypto_aead_ivsize(aead);
+	assoclen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr) - ivlen;
+
+//	alen = crypto_aead_authsize(aead);
+	alen = crypto_aead_authsize(aead);
 
 	tmp = eesp_alloc_tmp(aead, eesp->nfrags + 2);
 	if (!tmp)
@@ -440,9 +442,12 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 	sg_init_table(sg, eesp->nfrags);
 	err = skb_to_sgvec(skb, sg,
 		           (unsigned char *)eesph - skb->data,
+//		           assoclen + ivlen + eesp->clen);
 		           assoclen + ivlen + eesp->clen + alen);
-	if (unlikely(err < 0))
+	if (unlikely(err < 0)) {
+		printk("exit1\n");
 		goto error_free;
+	}
 
 	if (!eesp->inplace) {
 		int allocsize;
@@ -453,6 +458,7 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 		spin_lock_bh(&x->lock);
 		if (unlikely(!skb_page_frag_refill(allocsize, pfrag, GFP_ATOMIC))) {
 			spin_unlock_bh(&x->lock);
+			printk("exit2\n");
 			goto error_free;
 		}
 
@@ -468,9 +474,12 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 		sg_init_table(dsg, skb_shinfo(skb)->nr_frags + 1);
 		err = skb_to_sgvec(skb, dsg,
 			           (unsigned char *)eesph - skb->data,
+//			           assoclen + ivlen + eesp->clen);
 			           assoclen + ivlen + eesp->clen + alen);
-		if (unlikely(err < 0))
+		if (unlikely(err < 0)) {
+			printk("exit3\n");
 			goto error_free;
+		}
 	}
 
 	aead_request_set_callback(req, 0, eesp_output_done_esn, skb);
@@ -483,6 +492,7 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 
 	EESP_SKB_CB(skb)->tmp = tmp;
 	err = crypto_aead_encrypt(req);
+	printk("crypto_aead_encrypt err %d\n", err);
 
 	switch (err) {
 	case -EINPROGRESS:
@@ -505,6 +515,7 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 error_free:
 	kfree(tmp);
 error:
+	printk("eesp_output_tail err %d\n", err);
 	return err;
 }
 EXPORT_SYMBOL_GPL(eesp_output_tail);
@@ -531,7 +542,7 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 
 	blksize = ALIGN(crypto_aead_blocksize(aead), 4);
 	eesp.clen = ALIGN(skb->len + sizeof(struct ip_eesp_pyld_hdr), blksize);
-	eesp.plen = eesp.clen - skb->len;
+	eesp.plen = eesp.clen - skb->len - sizeof(struct ip_eesp_pyld_hdr);
 	eesp.tailen = eesp.plen + alen;
 
 	eesp.eesph = ip_eesp_hdr(skb);

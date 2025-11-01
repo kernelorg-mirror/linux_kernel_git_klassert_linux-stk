@@ -452,6 +452,7 @@ static int crypto_gcm_encrypt(struct aead_request *req)
 	crypto_gcm_init_crypt(req, req->cryptlen);
 	skcipher_request_set_callback(skreq, flags, gcm_encrypt_done, req);
 
+	printk("crypto_gcm_encrypt \n");
 	return crypto_skcipher_encrypt(skreq) ?:
 	       gcm_encrypt_continue(req, flags);
 }
@@ -757,11 +758,13 @@ static int crypto_rfc4106_encrypt(struct aead_request *req)
 	int err;
 
 	err = crypto_ipsec_check_assoclen(req->assoclen);
-	if (err)
+	if (err) {
+		printk("crypto_rfc4106_encrypt err %d\n", err);
 		return err;
+	}
 
 	req = crypto_rfc4106_crypt(req);
-
+	printk("crypto_rfc4106_encrypt err %d\n", err);
 	return crypto_aead_encrypt(req);
 }
 
