@@ -635,6 +635,9 @@ lock:
 			goto drop_unlock;
 		}
 
+		seq_hi = htonl(xfrm_replay_seqhi(x, seq));
+		printk("xfrm_input: spi 0x%x seq %d seq_hi %d\n", spi, seq, seq_hi);
+
 		if (xfrm_replay_check(x, skb, seq)) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATESEQERROR);
 			goto drop_unlock;

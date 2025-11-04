@@ -490,6 +490,7 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 	memcpy(iv + ivlen - min(ivlen, 8), (u8 *)&eesp_ph->iv + 8 - min(ivlen, 8),
 	       min(ivlen, 8));
 
+	skb_dump(KERN_WARNING, skb, true);
 	EESP_SKB_CB(skb)->tmp = tmp;
 	err = crypto_aead_encrypt(req);
 	printk("crypto_aead_encrypt err %d\n", err);
@@ -512,6 +513,7 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 	if (!err && x->encap && x->encap->encap_type == TCP_ENCAP_ESPINTCP)
 		err = eesp_output_tail_tcp(x, skb);
 
+	printk("eesp_output: eesp_ph->iv 0x%lld\n", be64_to_cpu(eesp_ph->iv)); 
 error_free:
 	kfree(tmp);
 error:
@@ -552,8 +554,10 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 		return eesp.nfrags;
 
 	eesph = eesp.eesph;
-	eesp_ph = (struct ip_eesp_peer_hdr *)eesph + sizeof(struct ip_eesp_hdr);
-	eesp_pyldh = (struct ip_eesp_pyld_hdr *)eesp_ph + sizeof(struct ip_eesp_peer_hdr);
+	eesp_ph = (void *)eesph + sizeof(struct ip_eesp_hdr);
+//	eesp_ph = (struct ip_eesp_peer_hdr *)eesph + sizeof(struct ip_eesp_hdr);
+	eesp_pyldh = (void *)eesp_ph + sizeof(struct ip_eesp_peer_hdr);
+//	eesp_pyldh = (struct ip_eesp_pyld_hdr *)eesp_ph + sizeof(struct ip_eesp_peer_hdr);
 
 	/* EESP base header */
 	eesph->one = 1;
@@ -563,10 +567,14 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 	eesph->spi = x->id.spi;
 
 	/* EESP peer header */
-	eesp_ph->seq_no = cpu_to_be64(XFRM_SKB_CB(skb)->seq.output.low +
-				       ((u64)XFRM_SKB_CB(skb)->seq.output.hi << 32));
+	eesp_ph->seq_no = cpu_to_be32(XFRM_SKB_CB(skb)->seq.output.low);
+	eesp_ph->seq_hi = cpu_to_be32(XFRM_SKB_CB(skb)->seq.output.hi);
+
 	/* EESP peer header: IV is inserted from the crypto layer */
 
+	printk("eesp_output: eesp->spi 0x%x\n", eesph->spi);
+	printk("eesp_output: eesp_ph->seq_no %d\n", be32_to_cpu(eesp_ph->seq_no));
+	printk("eesp_output: eesp_ph->seq_hi %d\n", be32_to_cpu(eesp_ph->seq_hi));
 	/* EESP payload header */
 	eesp_pyldh->zero = 0;
 	eesp_pyldh->reserved1 = 0;
@@ -574,7 +582,7 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 	eesp_pyldh->nexthdr = eesp.proto;
 	eesp_pyldh->padlen = eesp.plen;
 
-	eesp.seqno = eesp_ph->seq_no;
+//	eesp.seqno = eesp_ph->seq_no;
 
 	skb_push(skb, -skb_network_offset(skb));
 
@@ -593,18 +601,38 @@ static inline int eesp_remove_trailer(struct sk_buff *skb)
 	__wsum csumdiff;
 	u8 nexthdr;
 	int ret;
+	u8 reserved1, reserved2, zero;
 
+	struct ip_eesp_peer_hdr *eesp_ph;
 
 	alen = crypto_aead_authsize(aead);
 	hlen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr);
 	elen = skb->len - hlen;
 
+//	skb_reset_transport_header(skb);
 	eesph = ip_eesp_hdr(skb);
-	eesp_pyldh = (struct ip_eesp_pyld_hdr *)eesph + hlen;
+	
+//	eesph = (void *)(skb_network_header(skb) + skb_network_header_len(skb));
+	eesp_ph = (void *)eesph + sizeof(struct ip_eesp_hdr);
+	eesp_pyldh = (void *)eesph + hlen;
 
 	padlen = eesp_pyldh->padlen;
 	nexthdr = eesp_pyldh->nexthdr;
+	zero = eesp_pyldh->zero;
+	reserved1 = eesp_pyldh->reserved1;
+	reserved2 = eesp_pyldh->reserved2;
 
+	printk("eesp_remove_trailer: zero 0x%x, reserved1, 0x%x, reserved2 0x%x\n", zero, reserved1, reserved2);
+	printk("eesp_remove_trailer: padlen 0x%x, nexthdr 0x%x\n", padlen, nexthdr);
+	printk("eesp_remove_trailer: spi 0x%x\n", eesph->spi);
+	printk("eesp_remove_trailer: eesp_ph->seq_no 0x%x\n", be32_to_cpu(eesp_ph->seq_no));
+	printk("eesp_remove_trailer: eesp_ph->seq_hi 0x%x\n", be32_to_cpu(eesp_ph->seq_hi));
+	printk("eesp_remove_trailer: eesp_ph->iv 0x%llx\n", be64_to_cpu(eesp_ph->iv));
+//	printk("eesp_remove_trailer: eesp_ph->iv 0x%lld\n", be64_to_cpu(eesp_ph->iv));
+
+
+
+	skb_dump(KERN_WARNING, skb, true);
 	ret = -EINVAL;
 
 	if (padlen + alen >= elen) {

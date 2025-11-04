@@ -144,7 +144,8 @@ struct ip_eesp_hdr {
 };
 
 struct ip_eesp_peer_hdr {
-	__be64 seq_no;
+	__be32 seq_hi;
+	__be32 seq_no;
 	__be64 iv;
 };
 
