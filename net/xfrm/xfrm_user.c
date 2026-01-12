@@ -166,9 +166,10 @@ static inline int verify_replay(struct xfrm_usersa_info *p,
 		return -EINVAL;
 	}
 
-	/* As only ESP and AH support ESN feature. */
-	if ((p->id.proto != IPPROTO_ESP) && (p->id.proto != IPPROTO_AH)) {
-		NL_SET_ERR_MSG(extack, "ESN only supported for ESP and AH");
+	/* As only ESP, AH and EESP support ESN feature. */
+	if (p->id.proto != IPPROTO_ESP && p->id.proto != IPPROTO_AH &&
+	    p->id.proto != IPPROTO_EESP) {
+		NL_SET_ERR_MSG(extack, "ESN only supported for ESP, AH and EESP");
 		return -EINVAL;
 	}
 
@@ -352,6 +353,7 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 		break;
 
 	case IPPROTO_ESP:
+	case IPPROTO_EESP:
 		if (attrs[XFRMA_ALG_COMP]) {
 			NL_SET_ERR_MSG(extack, "Invalid attribute for ESP: COMP");
 			goto out;

@@ -513,11 +513,13 @@ static int crypto_rfc4106_encrypt(struct aead_request *req)
 	int err;
 
 	err = crypto_ipsec_check_assoclen(req->assoclen);
-	if (err)
+	if (err) {
+		printk("crypto_rfc4106_encrypt err %d\n", err);
 		return err;
+	}
 
 	req = crypto_rfc4106_crypt(req);
-
+	printk("crypto_rfc4106_encrypt err %d\n", err);
 	return crypto_aead_encrypt(req);
 }
 

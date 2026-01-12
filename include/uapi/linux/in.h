@@ -55,6 +55,8 @@ enum {
 #define IPPROTO_RSVP		IPPROTO_RSVP
   IPPROTO_GRE = 47,		/* Cisco GRE tunnels (rfc 1701,1702)	*/
 #define IPPROTO_GRE		IPPROTO_GRE
+  IPPROTO_EESP = 49,		/* Enhanced ESP				*/
+#define IPPROTO_EESP		IPPROTO_EESP
   IPPROTO_ESP = 50,		/* Encapsulation Security Payload protocol */
 #define IPPROTO_ESP		IPPROTO_ESP
   IPPROTO_AH = 51,		/* Authentication Header protocol	*/
