@@ -33,6 +33,7 @@
 #include <net/snmp.h>
 #endif
 
+#define XFRM_PROTO_EESP		49
 #define XFRM_PROTO_ESP		50
 #define XFRM_PROTO_AH		51
 #define XFRM_PROTO_COMP		108
@@ -411,6 +412,7 @@ struct xfrm_state_afinfo {
 
 	const struct xfrm_type_offload *type_offload_esp;
 
+	const struct xfrm_type		*type_eesp;
 	const struct xfrm_type		*type_esp;
 	const struct xfrm_type		*type_ipip;
 	const struct xfrm_type		*type_ipip6;
@@ -1542,6 +1544,7 @@ static inline bool xfrm_id_proto_valid(u8 proto)
 	switch (proto) {
 	case IPPROTO_AH:
 	case IPPROTO_ESP:
+	case IPPROTO_EESP:
 	case IPPROTO_COMP:
 #if IS_ENABLED(CONFIG_IPV6)
 	case IPPROTO_ROUTING:
@@ -1558,6 +1561,7 @@ static inline int xfrm_id_proto_match(u8 proto, u8 userproto)
 {
 	return (!userproto || proto == userproto ||
 		(userproto == IPSEC_PROTO_ANY && (proto == IPPROTO_AH ||
+						  proto == IPPROTO_EESP ||
 						  proto == IPPROTO_ESP ||
 						  proto == IPPROTO_COMP)));
 }

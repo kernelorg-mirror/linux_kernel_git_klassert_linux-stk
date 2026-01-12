@@ -256,6 +256,9 @@ int xfrm_register_type(const struct xfrm_type *type, unsigned short family)
 	case IPPROTO_ESP:
 		X(afinfo, type, esp);
 		break;
+	case IPPROTO_EESP:
+		X(afinfo, type, eesp);
+		break;
 	case IPPROTO_IPIP:
 		X(afinfo, type, ipip);
 		break;
@@ -301,6 +304,9 @@ void xfrm_unregister_type(const struct xfrm_type *type, unsigned short family)
 	case IPPROTO_ESP:
 		X(afinfo, type, esp);
 		break;
+	case IPPROTO_EESP:
+		X(afinfo, type, eesp);
+		break;
 	case IPPROTO_IPIP:
 		X(afinfo, type, ipip);
 		break;
@@ -339,6 +345,9 @@ retry:
 		break;
 	case IPPROTO_AH:
 		type = afinfo->type_ah;
+		break;
+	case IPPROTO_EESP:
+		type = afinfo->type_eesp;
 		break;
 	case IPPROTO_ESP:
 		type = afinfo->type_esp;
@@ -2546,6 +2555,7 @@ int verify_spi_info(u8 proto, u32 min, u32 max, struct netlink_ext_ack *extack)
 	switch (proto) {
 	case IPPROTO_AH:
 	case IPPROTO_ESP:
+	case IPPROTO_EESP:
 		break;
 
 	case IPPROTO_COMP:

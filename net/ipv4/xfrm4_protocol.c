@@ -19,6 +19,7 @@
 #include <net/xfrm.h>
 
 static struct xfrm4_protocol __rcu *esp4_handlers __read_mostly;
+static struct xfrm4_protocol __rcu *eesp4_handlers __read_mostly;
 static struct xfrm4_protocol __rcu *ah4_handlers __read_mostly;
 static struct xfrm4_protocol __rcu *ipcomp4_handlers __read_mostly;
 static DEFINE_MUTEX(xfrm4_protocol_mutex);
@@ -28,6 +29,8 @@ static inline struct xfrm4_protocol __rcu **proto_handlers(u8 protocol)
 	switch (protocol) {
 	case IPPROTO_ESP:
 		return &esp4_handlers;
+	case IPPROTO_EESP:
+		return &eesp4_handlers;
 	case IPPROTO_AH:
 		return &ah4_handlers;
 	case IPPROTO_COMP:
@@ -121,6 +124,34 @@ static int xfrm4_esp_err(struct sk_buff *skb, u32 info)
 	return -ENOENT;
 }
 
+static int xfrm4_eesp_rcv(struct sk_buff *skb)
+{
+	int ret;
+	struct xfrm4_protocol *handler;
+
+	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip4 = NULL;
+
+	for_each_protocol_rcu(eesp4_handlers, handler)
+		if ((ret = handler->handler(skb)) != -EINVAL)
+			return ret;
+
+	icmp_send(skb, ICMP_DEST_UNREACH, ICMP_PORT_UNREACH, 0);
+
+	kfree_skb(skb);
+	return 0;
+}
+
+static int xfrm4_eesp_err(struct sk_buff *skb, u32 info)
+{
+	struct xfrm4_protocol *handler;
+
+	for_each_protocol_rcu(eesp4_handlers, handler)
+		if (!handler->err_handler(skb, info))
+			return 0;
+
+	return -ENOENT;
+}
+
 static int xfrm4_ah_rcv(struct sk_buff *skb)
 {
 	int ret;
@@ -183,6 +214,12 @@ static const struct net_protocol esp4_protocol = {
 	.no_policy	=	1,
 };
 
+static const struct net_protocol eesp4_protocol = {
+	.handler	=	xfrm4_eesp_rcv,
+	.err_handler	=	xfrm4_eesp_err,
+	.no_policy	=	1,
+};
+
 static const struct net_protocol ah4_protocol = {
 	.handler	=	xfrm4_ah_rcv,
 	.err_handler	=	xfrm4_ah_err,
@@ -205,6 +242,8 @@ static inline const struct net_protocol *netproto(unsigned char protocol)
 	switch (protocol) {
 	case IPPROTO_ESP:
 		return &esp4_protocol;
+	case IPPROTO_EESP:
+		return &eesp4_protocol;
 	case IPPROTO_AH:
 		return &ah4_protocol;
 	case IPPROTO_COMP:

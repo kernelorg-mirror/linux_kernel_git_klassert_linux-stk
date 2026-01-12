@@ -20,6 +20,7 @@
 #include <net/xfrm.h>
 
 static struct xfrm6_protocol __rcu *esp6_handlers __read_mostly;
+static struct xfrm6_protocol __rcu *eesp6_handlers __read_mostly;
 static struct xfrm6_protocol __rcu *ah6_handlers __read_mostly;
 static struct xfrm6_protocol __rcu *ipcomp6_handlers __read_mostly;
 static DEFINE_MUTEX(xfrm6_protocol_mutex);
@@ -29,6 +30,8 @@ static inline struct xfrm6_protocol __rcu **proto_handlers(u8 protocol)
 	switch (protocol) {
 	case IPPROTO_ESP:
 		return &esp6_handlers;
+	case IPPROTO_EESP:
+		return &eesp6_handlers;
 	case IPPROTO_AH:
 		return &ah6_handlers;
 	case IPPROTO_COMP:
@@ -135,6 +138,35 @@ static int xfrm6_esp_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	return -ENOENT;
 }
 
+static int xfrm6_eesp_rcv(struct sk_buff *skb)
+{
+	int ret;
+	struct xfrm6_protocol *handler;
+
+	XFRM_TUNNEL_SKB_CB(skb)->tunnel.ip6 = NULL;
+
+	for_each_protocol_rcu(eesp6_handlers, handler)
+		if ((ret = handler->handler(skb)) != -EINVAL)
+			return ret;
+
+	icmpv6_send(skb, ICMPV6_DEST_UNREACH, ICMPV6_PORT_UNREACH, 0);
+
+	kfree_skb(skb);
+	return 0;
+}
+
+static int xfrm6_eesp_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
+			  u8 type, u8 code, int offset, __be32 info)
+{
+	struct xfrm6_protocol *handler;
+
+	for_each_protocol_rcu(eesp6_handlers, handler)
+		if (!handler->err_handler(skb, opt, type, code, offset, info))
+			return 0;
+
+	return -ENOENT;
+}
+
 static int xfrm6_ah_rcv(struct sk_buff *skb)
 {
 	int ret;
@@ -199,6 +231,12 @@ static const struct inet6_protocol esp6_protocol = {
 	.flags		=	INET6_PROTO_NOPOLICY,
 };
 
+static const struct inet6_protocol eesp6_protocol = {
+	.handler	=	xfrm6_eesp_rcv,
+	.err_handler	=	xfrm6_eesp_err,
+	.flags		=	INET6_PROTO_NOPOLICY,
+};
+
 static const struct inet6_protocol ah6_protocol = {
 	.handler	=	xfrm6_ah_rcv,
 	.err_handler	=	xfrm6_ah_err,
@@ -221,6 +259,8 @@ static inline const struct inet6_protocol *netproto(unsigned char protocol)
 	switch (protocol) {
 	case IPPROTO_ESP:
 		return &esp6_protocol;
+	case IPPROTO_EESP:
+		return &eesp6_protocol;
 	case IPPROTO_AH:
 		return &ah6_protocol;
 	case IPPROTO_COMP:
