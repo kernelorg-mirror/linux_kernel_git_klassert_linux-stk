@@ -124,6 +124,18 @@ struct ip_esp_hdr {
 	__u8  enc_data[];	/* Variable len but >=8. Mind the 64 bit alignment! */
 };
 
+struct ip_version {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u8	unused:4,
+		version:4;
+#elif defined (__BIG_ENDIAN_BITFIELD)
+	__u8	version:4,
+  		unused:4;
+#else
+#error	"Please fix <asm/byteorder.h>"
+#endif
+};
+
 struct ip_eesp_hdr {
 #if defined(__LITTLE_ENDIAN_BITFIELD)
 	__u8 optlen;

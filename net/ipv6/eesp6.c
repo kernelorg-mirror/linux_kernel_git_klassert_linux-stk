@@ -188,18 +188,23 @@ static int eesp6_init_state(struct xfrm_state *x, struct netlink_ext_ack *extack
 
 	aead = x->data;
 
-	x->props.header_len = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr) + sizeof(struct ip_eesp_pyld_hdr);
+	x->props.header_len = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr);
+
 	switch (x->props.mode) {
 	case XFRM_MODE_BEET:
+		x->props.header_len += sizeof(struct ip_eesp_pyld_hdr);
+
 		if (x->sel.family != AF_INET6)
 			x->props.header_len += IPV4_BEET_PHMAXLEN +
 					       (sizeof(struct ipv6hdr) - sizeof(struct iphdr));
 		break;
-	default:
 	case XFRM_MODE_TRANSPORT:
+		x->props.header_len += sizeof(struct ip_eesp_pyld_hdr);
 		break;
 	case XFRM_MODE_TUNNEL:
 		x->props.header_len += sizeof(struct ipv6hdr);
+		break;
+	default:
 		break;
 	}
 

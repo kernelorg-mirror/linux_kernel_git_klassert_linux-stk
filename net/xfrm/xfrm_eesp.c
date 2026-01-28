@@ -526,6 +526,7 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 {
 	int alen;
 	int blksize;
+	int pyld_hdrlen;
 	struct ip_eesp_pyld_hdr *eesp_pyldh;
 	struct ip_eesp_peer_hdr *eesp_ph;
 	struct ip_eesp_hdr *eesph;
@@ -542,9 +543,13 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 	aead = x->data;
 	alen = crypto_aead_authsize(aead);
 
+	pyld_hdrlen = 0;
+	if (x->props.mode != XFRM_MODE_TUNNEL)
+		pyld_hdrlen = sizeof(struct ip_eesp_pyld_hdr);
+
 	blksize = ALIGN(crypto_aead_blocksize(aead), 4);
-	eesp.clen = ALIGN(skb->len + sizeof(struct ip_eesp_pyld_hdr), blksize);
-	eesp.plen = eesp.clen - skb->len - sizeof(struct ip_eesp_pyld_hdr);
+	eesp.clen = ALIGN(skb->len + pyld_hdrlen, blksize);
+	eesp.plen = eesp.clen - skb->len - pyld_hdrlen;
 	eesp.tailen = eesp.plen + alen;
 
 	eesp.eesph = ip_eesp_hdr(skb);
@@ -555,9 +560,6 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 
 	eesph = eesp.eesph;
 	eesp_ph = (void *)eesph + sizeof(struct ip_eesp_hdr);
-//	eesp_ph = (struct ip_eesp_peer_hdr *)eesph + sizeof(struct ip_eesp_hdr);
-	eesp_pyldh = (void *)eesp_ph + sizeof(struct ip_eesp_peer_hdr);
-//	eesp_pyldh = (struct ip_eesp_pyld_hdr *)eesp_ph + sizeof(struct ip_eesp_peer_hdr);
 
 	/* EESP base header */
 	eesph->one = 1;
@@ -575,12 +577,17 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 	printk("eesp_output: eesp->spi 0x%x\n", eesph->spi);
 	printk("eesp_output: eesp_ph->seq_no %d\n", be32_to_cpu(eesp_ph->seq_no));
 	printk("eesp_output: eesp_ph->seq_hi %d\n", be32_to_cpu(eesp_ph->seq_hi));
-	/* EESP payload header */
-	eesp_pyldh->zero = 0;
-	eesp_pyldh->reserved1 = 0;
-	eesp_pyldh->reserved2 = 0;
-	eesp_pyldh->nexthdr = eesp.proto;
-	eesp_pyldh->padlen = eesp.plen;
+
+	if (x->props.mode != XFRM_MODE_TUNNEL) {
+		/* EESP payload header */
+		eesp_pyldh = (void *)eesp_ph + sizeof(struct ip_eesp_peer_hdr);
+
+		eesp_pyldh->zero = 0;
+		eesp_pyldh->reserved1 = 0;
+		eesp_pyldh->reserved2 = 0;
+		eesp_pyldh->nexthdr = eesp.proto;
+		eesp_pyldh->padlen = eesp.plen;
+	}
 
 //	eesp.seqno = eesp_ph->seq_no;
 
@@ -596,11 +603,13 @@ static inline int eesp_remove_trailer(struct sk_buff *skb)
 	struct crypto_aead *aead = x->data;
 	struct ip_eesp_pyld_hdr *eesp_pyldh;
 	struct ip_eesp_hdr *eesph;
+	struct ip_version *ipv;
 	int alen, hlen, elen;
 	int padlen, trimlen;
 	__wsum csumdiff;
 	u8 nexthdr;
-	int ret;
+	u8 version;
+	int ret = -EINVAL;
 	u8 reserved1, reserved2, zero;
 
 	struct ip_eesp_peer_hdr *eesp_ph;
@@ -614,13 +623,45 @@ static inline int eesp_remove_trailer(struct sk_buff *skb)
 	
 //	eesph = (void *)(skb_network_header(skb) + skb_network_header_len(skb));
 	eesp_ph = (void *)eesph + sizeof(struct ip_eesp_hdr);
-	eesp_pyldh = (void *)eesph + hlen;
 
-	padlen = eesp_pyldh->padlen;
-	nexthdr = eesp_pyldh->nexthdr;
-	zero = eesp_pyldh->zero;
-	reserved1 = eesp_pyldh->reserved1;
-	reserved2 = eesp_pyldh->reserved2;
+	if (x->props.mode == XFRM_MODE_TUNNEL) {
+		ipv = (void *)eesph + hlen;
+
+		version = ipv->version;
+
+		if (version == 4) {
+			const struct iphdr *iph = (void *)ipv;
+
+			nexthdr = iph->protocol;
+			padlen = elen - ntohs(iph->tot_len);
+		} else if (version == 6) {
+			const struct ipv6hdr *ip6h = (void *)ipv;
+			int offset = skb_network_offset(skb) + sizeof(*ip6h);
+			__be16 frag_off;
+
+			nexthdr = ip6h->nexthdr;
+			padlen = elen - ntohs(ip6h->payload_len) - sizeof(*ip6h);
+
+			offset = ipv6_skip_exthdr(skb, offset, &nexthdr, &frag_off);
+			if (offset == -1)
+				goto out;
+		} else {
+			goto out;
+		}
+
+		zero = 0;
+		reserved1 = 0;
+		reserved2 = 0;
+
+	} else {
+		eesp_pyldh = (void *)eesph + hlen;
+
+		padlen = eesp_pyldh->padlen;
+		nexthdr = eesp_pyldh->nexthdr;
+		zero = eesp_pyldh->zero;
+		reserved1 = eesp_pyldh->reserved1;
+		reserved2 = eesp_pyldh->reserved2;
+	}
 
 	printk("eesp_remove_trailer: zero 0x%x, reserved1, 0x%x, reserved2 0x%x\n", zero, reserved1, reserved2);
 	printk("eesp_remove_trailer: padlen 0x%x, nexthdr 0x%x\n", padlen, nexthdr);
@@ -633,7 +674,6 @@ static inline int eesp_remove_trailer(struct sk_buff *skb)
 
 
 	skb_dump(KERN_WARNING, skb, true);
-	ret = -EINVAL;
 
 	if (padlen + alen >= elen) {
 		net_dbg_ratelimited("ipsec eesp packet is garbage padlen=%d, elen=%d\n",
@@ -661,7 +701,7 @@ int eesp_input_done2(struct sk_buff *skb, int err)
 {
 	struct xfrm_state *x = xfrm_input_state(skb);
 	struct xfrm_offload *xo = xfrm_offload(skb);
-	/* IV size! */
+	/* FIXME:  IV size fixed to 8 bytes in ip_eesp_peer_hdr! */
 	int hlen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr) + sizeof(struct ip_eesp_pyld_hdr);
 	int hdr_len = skb_network_header_len(skb);
 	int nexthdr;
@@ -683,6 +723,7 @@ int eesp_input_done2(struct sk_buff *skb, int err)
 		if (unlikely(err))
 			goto out;
 
+		/* XXX: Is this correct, check esp46 merge! */
 		switch (x->encap->encap_type) {
 		case TCP_ENCAP_ESPINTCP:
 			hdr_len -= sizeof(struct tcphdr);
