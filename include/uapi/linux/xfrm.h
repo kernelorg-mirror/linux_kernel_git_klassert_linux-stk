@@ -330,10 +330,19 @@ enum xfrm_attr_type_t {
 	XFRMA_IPTFS_INIT_DELAY,	/* __u32 out: initial packet wait delay (usec) */
 	XFRMA_IPTFS_MAX_QSIZE,	/* __u32 out: max ingress queue size (octets) */
 	XFRMA_IPTFS_PKT_SIZE,	/* __u32 out: size of outer packet, 0 for PMTU */
+	XFRMA_SUB_SA,		/* struct xfrm_subsa_info */
 	__XFRMA_MAX
 
 #define XFRMA_OUTPUT_MARK XFRMA_SET_MARK	/* Compatibility */
 #define XFRMA_MAX (__XFRMA_MAX - 1)
+};
+
+struct xfrm_subsa_info {
+	__u16	max;
+	__u16	type;
+
+#define XFRM_SUBSA_TYPE_CPU	1
+#define XFRM_SUBSA_TYPE_QOS	2
 };
 
 struct xfrm_mark {
