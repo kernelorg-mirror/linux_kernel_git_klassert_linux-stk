@@ -351,15 +351,17 @@ static int esp_output_encap(struct xfrm_state *x, struct sk_buff *skb,
 	struct xfrm_encap_tmpl *encap = x->encap;
 	struct ip_esp_hdr *esph;
 	__be16 sport, dport;
+	unsigned int seq;
 	int encap_type;
 
 	esph = ERR_PTR(-EOPNOTSUPP);
 
-	spin_lock_bh(&x->lock);
-	sport = encap->encap_sport;
-	dport = encap->encap_dport;
-	encap_type = encap->encap_type;
-	spin_unlock_bh(&x->lock);
+	do {
+		seq = read_seqbegin(&x->slock);
+		sport = encap->encap_sport;
+		dport = encap->encap_dport;
+		encap_type = encap->encap_type;
+	} while (read_seqretry(&x->slock, seq));
 
 	switch (encap_type) {
 	default:
@@ -411,16 +413,24 @@ int esp_output_head(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 			    !skb_has_frag_list(skb)) {
 			int allocsize;
 			struct sock *sk = skb->sk;
-			struct page_frag *pfrag = &x->xfrag;
+			struct xfrm_sub_state *sx;
+			struct page_frag *pfrag;
 
 			esp->inplace = false;
 
 			allocsize = ALIGN(tailen, L1_CACHE_BYTES);
 
-			spin_lock_bh(&x->lock);
+			xfrm_sub_state_lock_bh(x);
+
+			sx = xfrm_sub_state_get(x, x->id.proto);
+			if (!sx) {
+				xfrm_sub_state_unlock_bh(x);
+				return -ENOENT;
+			}
+			pfrag = &sx->xfrag;
 
 			if (unlikely(!skb_page_frag_refill(allocsize, pfrag, GFP_ATOMIC))) {
-				spin_unlock_bh(&x->lock);
+				xfrm_sub_state_unlock_bh(x);
 				goto cow;
 			}
 
@@ -439,7 +449,7 @@ int esp_output_head(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 
 			pfrag->offset = pfrag->offset + allocsize;
 
-			spin_unlock_bh(&x->lock);
+			xfrm_sub_state_unlock_bh(x);
 
 			nfrags++;
 
@@ -523,13 +533,23 @@ int esp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 
 	if (!esp->inplace) {
 		int allocsize;
-		struct page_frag *pfrag = &x->xfrag;
+		struct xfrm_sub_state *sx;
+		struct page_frag *pfrag;
 
 		allocsize = ALIGN(skb->data_len, L1_CACHE_BYTES);
 
-		spin_lock_bh(&x->lock);
+		xfrm_sub_state_lock_bh(x);
+
+		sx = xfrm_sub_state_get(x, x->id.proto);
+		if (!sx) {
+			xfrm_sub_state_unlock_bh(x);
+			err = -ENOENT;
+			goto error_free;
+		}
+		pfrag = &sx->xfrag;
+
 		if (unlikely(!skb_page_frag_refill(allocsize, pfrag, GFP_ATOMIC))) {
-			spin_unlock_bh(&x->lock);
+			xfrm_sub_state_unlock_bh(x);
 			goto error_free;
 		}
 
@@ -540,7 +560,7 @@ int esp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 		/* replace page frags in skb with new page */
 		__skb_fill_page_desc(skb, 0, page, pfrag->offset, skb->data_len);
 		pfrag->offset = pfrag->offset + allocsize;
-		spin_unlock_bh(&x->lock);
+		xfrm_sub_state_unlock_bh(x);
 
 		sg_init_table(dsg, skb_shinfo(skb)->nr_frags + 1);
 		err = skb_to_sgvec(skb, dsg,

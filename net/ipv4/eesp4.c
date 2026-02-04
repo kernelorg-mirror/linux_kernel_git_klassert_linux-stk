@@ -9,15 +9,19 @@
 #ifdef CONFIG_INET_ESPINTCP
 static struct sock *eesp_find_tcp_sk(struct xfrm_state *x)
 {
-	struct xfrm_encap_tmpl *encap = x->encap;
+	struct xfrm_encap_tmpl *encap;
 	struct net *net = xs_net(x);
 	__be16 sport, dport;
+	unsigned int seq;
 	struct sock *sk;
 
-	spin_lock_bh(&x->lock);
-	sport = encap->encap_sport;
-	dport = encap->encap_dport;
-	spin_unlock_bh(&x->lock);
+	do {
+		seq = read_seqbegin(&x->slock);
+
+		encap = x->encap;
+		sport = encap->encap_sport;
+		dport = encap->encap_dport;
+	} while (read_seqretry(&x->slock, seq));
 
 	sk = inet_lookup_established(net, x->id.daddr.a4, dport,
 				     x->props.saddr.a4, sport, 0);

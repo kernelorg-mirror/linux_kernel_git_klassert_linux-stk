@@ -64,6 +64,8 @@ static struct xfrm_state *ipcomp_tunnel_create(struct xfrm_state *x)
 	if (!t)
 		goto out;
 	lockdep_set_class(&t->lock, &xfrm_state_lock_key);
+	/* Both seqlock classes must differ from the parent SA's. */
+	seqlock_init(&t->slock);
 
 	t->id.proto = IPPROTO_IPIP;
 	t->id.spi = x->props.saddr.a4;

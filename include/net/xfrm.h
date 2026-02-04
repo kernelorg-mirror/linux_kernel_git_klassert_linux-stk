@@ -187,9 +187,74 @@ enum xfrm_replay_mode {
 	XFRM_REPLAY_MODE_ESN,
 };
 
-/* Full description of state of transformer. */
+#define XFRM_MAX_SUB_STATES 1
+
+struct xfrm_lifetime {
+	__u64	add_time;
+	__u64	use_time;
+};
+
+struct xfrm_lifebytes {
+	__u64	bytes;
+	__u64	packets;
+};
+
+struct xfrm_sub_state {
+	/* Sub SA data */
+
+	/* --- cacheline 9 boundary (576 bytes) --- */
+	/* --- cacheline 10 boundary (640 bytes) --- */
+	struct xfrm_lifebytes	curlbt;
+
+	__u16			id;
+	bool			replay_esn_valid;
+
+	/* Last used time */
+	time64_t		lastused;
+
+	/* State for replay detection */
+//	struct xfrm_replay_state_esn *replay_esn;
+
+	/* Replay detection state at the time we sent the last notification */
+//	struct xfrm_replay_state_esn *preplay_esn;
+
+	/* --- cacheline 11 boundary (704 bytes) --- */
+	/* --- cacheline 12 boundary (768 bytes) --- */
+	/* Statistics */
+	struct xfrm_stats	stats;
+
+	struct page_frag xfrag;
+
+	/* State for replay detection */
+//	struct xfrm_replay_state_esn treplay_esn;
+
+	/* State for replay detection */
+	struct xfrm_replay_state replay;
+
+	/* Replay detection state at the time we sent the last notification */
+	struct xfrm_replay_state preplay;
+
+
+	/* Replay detection state at the time we sent the last notification */
+	struct xfrm_replay_state_esn replay_esn[];
+
+
+};
+
+struct xfrm_sub_state_rcu {
+	/* Sub SA data */
+	union {
+		struct xfrm_sub_state *sx;
+		struct xfrm_sub_state __percpu *psx;
+	};
+	struct rcu_head rcu;
+	bool percpu;
+};
+
+/* Full description of state of transformer.
+ * Optimized for 64 bytes cachelines. */
 struct xfrm_state {
-	possible_net_t		xs_net;
+	seqlock_t	____cacheline_aligned	slock;
 	union {
 		struct hlist_node	gclist;
 		struct hlist_node	bydst;
@@ -200,23 +265,43 @@ struct xfrm_state {
 	};
 	struct hlist_node	byspi;
 	struct hlist_node	byseq;
+
+	/* --- cacheline 1 boundary (64 bytes) --- */
 	struct hlist_node	state_cache;
 	struct hlist_node	state_cache_input;
 
-	refcount_t		refcnt;
-	spinlock_t		lock;
-
-	u32			pcpu_num;
-	struct xfrm_id		id;
-	struct xfrm_selector	sel;
-	struct xfrm_mark	mark;
-	u32			if_id;
-	u32			tfcpad;
-
-	u32			genid;
-
 	/* Key manager bits */
 	struct xfrm_state_walk	km;
+
+	/* --- cacheline 2 boundary (128 bytes) --- */
+	possible_net_t		xs_net;
+	refcount_t		refcnt;
+	u32			pcpu_num;
+
+	struct xfrm_lifetime	curlft;
+
+	/* used to fix curlft->add_time when changing date */
+	long		saved_tmo;
+
+	/* mapping change rate limiting */
+	__be16 new_mapping_sport;
+	u32 new_mapping;	/* seconds */
+	u32 mapping_maxage;	/* seconds for input SA */
+
+	/* NAT keepalive */
+	u32			nat_keepalive_interval; /* seconds */
+	time64_t		nat_keepalive_expiration;
+
+
+	struct xfrm_id		id;
+
+	/* --- cacheline 3 boundary (192 bytes) --- */
+
+	struct xfrm_selector	sel;
+	struct xfrm_mark	mark;
+
+	/* --- cacheline 4 boundary (256 bytes) --- */
+	u32			if_id;
 
 	/* Parameters of this state. */
 	struct {
@@ -234,26 +319,66 @@ struct xfrm_state {
 		struct xfrm_mark	smark;
 	} props;
 
-	struct xfrm_lifetime_cfg lft;
+	/* Data for encapsulator */
+	struct xfrm_encap_tmpl	*encap;
+
+	/* --- cacheline 5 boundary (320 bytes) --- */
 
 	/* Data for transformer */
 	struct xfrm_algo_auth	*aalg;
 	struct xfrm_algo	*ealg;
-	struct xfrm_algo	*calg;
 	struct xfrm_algo_aead	*aead;
+	struct xfrm_algo	*calg;
 	const char		*geniv;
 
-	/* mapping change rate limiting */
-	__be16 new_mapping_sport;
-	u32 new_mapping;	/* seconds */
-	u32 mapping_maxage;	/* seconds for input SA */
+	/* replay detection mode */
+	enum xfrm_replay_mode    repl_mode;
 
-	/* Data for encapsulator */
-	struct xfrm_encap_tmpl	*encap;
+	/* internal flag that only holds state for delayed aevent at the
+	 * moment
+	*/
+	u32			xflags;
 
-	/* NAT keepalive */
-	u32			nat_keepalive_interval; /* seconds */
-	time64_t		nat_keepalive_expiration;
+	struct xfrm_dev_offload xso;
+
+	/* --- cacheline 6 boundary (384 bytes) --- */
+	/* Reference to data common to all the instances of this
+	 * transformer. */
+	const struct xfrm_type	*type;
+	const struct xfrm_type_offload	*type_offload;
+
+	/* Security context */
+	struct xfrm_sec_ctx	*security;
+
+	/* Private data of this transformer, format is opaque,
+	 * interpreted by xfrm_type methods. */
+	void			*data;
+
+	struct xfrm_mode	inner_mode;
+	struct xfrm_mode	inner_mode_iaf;
+	struct xfrm_mode	outer_mode;
+
+	u8			dir;
+	u32			genid;
+
+	/* --- cacheline 7 boundary (448 bytes) --- */
+	const struct xfrm_mode_cbs	*mode_cbs;
+	void				*mode_data;
+
+	struct hrtimer		mtimer;
+
+	/* Replay detection notification timer */
+	struct timer_list	rtimer;
+
+	struct xfrm_lifetime_cfg lft;
+
+	/* Replay detection notification settings */
+	u32			replay_maxage;
+	u32			replay_maxdiff;
+
+	struct xfrm_subsa_info	subsa;
+
+	/* Legacy and non IPsec stuff goes here. */
 
 	/* Data for care-of address */
 	xfrm_address_t	*coaddr;
@@ -264,63 +389,14 @@ struct xfrm_state {
 	/* If a tunnel, number of users + 1 */
 	atomic_t		tunnel_users;
 
-	/* State for replay detection */
-	struct xfrm_replay_state replay;
-	struct xfrm_replay_state_esn *replay_esn;
+	u32			tfcpad;
 
-	/* Replay detection state at the time we sent the last notification */
-	struct xfrm_replay_state preplay;
-	struct xfrm_replay_state_esn *preplay_esn;
+	/* End of legacy suff. */
 
-	/* replay detection mode */
-	enum xfrm_replay_mode    repl_mode;
-	/* internal flag that only holds state for delayed aevent at the
-	 * moment
-	*/
-	u32			xflags;
-
-	/* Replay detection notification settings */
-	u32			replay_maxage;
-	u32			replay_maxdiff;
-
-	/* Replay detection notification timer */
-	struct timer_list	rtimer;
-
-	/* Statistics */
-	struct xfrm_stats	stats;
-
-	struct xfrm_lifetime_cur curlft;
-	struct hrtimer		mtimer;
-
-	struct xfrm_dev_offload xso;
-
-	/* used to fix curlft->add_time when changing date */
-	long		saved_tmo;
-
-	/* Last used time */
-	time64_t		lastused;
-
-	struct page_frag xfrag;
-
-	/* Reference to data common to all the instances of this
-	 * transformer. */
-	const struct xfrm_type	*type;
-	struct xfrm_mode	inner_mode;
-	struct xfrm_mode	inner_mode_iaf;
-	struct xfrm_mode	outer_mode;
-
-	const struct xfrm_type_offload	*type_offload;
-
-	/* Security context */
-	struct xfrm_sec_ctx	*security;
-
-	/* Private data of this transformer, format is opaque,
-	 * interpreted by xfrm_type methods. */
-	void			*data;
-	u8			dir;
-
-	const struct xfrm_mode_cbs	*mode_cbs;
-	void				*mode_data;
+	/* Serializes sub-state pointer writers and legacy mutations. */
+	spinlock_t	____cacheline_aligned lock;
+	/* --- cacheline 8 boundary (512 bytes) --- */
+	struct xfrm_sub_state_rcu	__rcu *rsx;
 };
 
 static inline struct net *xs_net(struct xfrm_state *x)
@@ -935,6 +1011,35 @@ static inline void xfrm_pols_put(struct xfrm_policy **pols, int npols)
 }
 
 void __xfrm_state_destroy(struct xfrm_state *);
+
+/* RCU protects sub-state lifetime for both protocols. BH-disabled callers
+ * also pin EESP's CPU-local counters; legacy replay and fragments need lock.
+ */
+static inline void xfrm_sub_state_lock(struct xfrm_state *x)
+{
+	rcu_read_lock();
+	if (x->id.proto != IPPROTO_EESP)
+		spin_lock(&x->lock);
+}
+
+static inline void xfrm_sub_state_unlock(struct xfrm_state *x)
+{
+	if (x->id.proto != IPPROTO_EESP)
+		spin_unlock(&x->lock);
+	rcu_read_unlock();
+}
+
+static inline void xfrm_sub_state_lock_bh(struct xfrm_state *x)
+{
+	local_bh_disable();
+	xfrm_sub_state_lock(x);
+}
+
+static inline void xfrm_sub_state_unlock_bh(struct xfrm_state *x)
+{
+	xfrm_sub_state_unlock(x);
+	local_bh_enable();
+}
 
 static inline void __xfrm_state_put(struct xfrm_state *x)
 {
@@ -1709,6 +1814,9 @@ void xfrm_state_walk_init(struct xfrm_state_walk *walk, u8 proto,
 int xfrm_state_walk(struct net *net, struct xfrm_state_walk *walk,
 		    int (*func)(struct xfrm_state *, int, void*), void *);
 void xfrm_state_walk_done(struct xfrm_state_walk *walk, struct net *net);
+struct xfrm_sub_state *xfrm_sub_state_get(struct xfrm_state *x, __u8 proto);
+const struct xfrm_sub_state *xfrm_sub_state_get_const(const struct xfrm_state *x, __u8 proto);
+int xfrm_sub_state_alloc(struct xfrm_state *x, __u8 proto, struct nlattr *rta);
 struct xfrm_state *xfrm_state_alloc(struct net *net);
 void xfrm_state_free(struct xfrm_state *x);
 struct xfrm_state *xfrm_state_find(const xfrm_address_t *daddr,
@@ -1724,7 +1832,8 @@ struct xfrm_state *xfrm_stateonly_find(struct net *net, u32 mark, u32 if_id,
 				       u8 mode, u8 proto, u32 reqid);
 struct xfrm_state *xfrm_state_lookup_byspi(struct net *net, __be32 spi,
 					      unsigned short family);
-int xfrm_state_check_expire(struct xfrm_state *x);
+/* Refresh packet-offload stats before taking sub-state protection. */
+int xfrm_state_check_expire(struct xfrm_state *x, struct xfrm_sub_state *sx);
 void xfrm_state_update_stats(struct net *net);
 #ifdef CONFIG_XFRM_OFFLOAD
 static inline void xfrm_dev_state_update_stats(struct xfrm_state *x)
@@ -1797,7 +1906,7 @@ int xfrm_dev_policy_flush(struct net *net, struct net_device *dev,
 			  bool task_valid);
 void xfrm_sad_getinfo(struct net *net, struct xfrmk_sadinfo *si);
 void xfrm_spd_getinfo(struct net *net, struct xfrmk_spdinfo *si);
-u32 xfrm_replay_seqhi(struct xfrm_state *x, __be32 net_seq);
+u32 xfrm_replay_seqhi(struct xfrm_sub_state *sx, __be32 net_seq);
 int xfrm_init_replay(struct xfrm_state *x, struct netlink_ext_ack *extack);
 u32 xfrm_state_mtu(struct xfrm_state *x, int mtu);
 int __xfrm_init_state(struct xfrm_state *x, struct netlink_ext_ack *extack);
@@ -1926,7 +2035,8 @@ struct xfrm_state *xfrm_state_migrate_create(struct xfrm_state *x,
 					     const struct xfrm_migrate *m,
 					     struct net *net,
 					     struct netlink_ext_ack *extack);
-int xfrm_state_migrate_install(const struct xfrm_state *x,
+/* Commit consumes the unpublished clone, including on failure. */
+int xfrm_state_migrate_install(struct xfrm_state *x,
 			       struct xfrm_state *xc,
 			       const struct xfrm_migrate *m,
 			       struct netlink_ext_ack *extack);
@@ -1990,11 +2100,15 @@ static inline int xfrm_policy_id2dir(u32 index)
 }
 
 #ifdef CONFIG_XFRM
-void xfrm_replay_advance(struct xfrm_state *x, __be32 net_seq);
-int xfrm_replay_check(struct xfrm_state *x, struct sk_buff *skb, __be32 net_seq);
+void xfrm_replay_advance(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			 __be32 net_seq);
+int xfrm_replay_check(struct xfrm_state *x, struct xfrm_sub_state *sx,
+		      struct sk_buff *skb, __be32 net_seq);
 void xfrm_replay_notify(struct xfrm_state *x, int event);
-int xfrm_replay_overflow(struct xfrm_state *x, struct sk_buff *skb);
-int xfrm_replay_recheck(struct xfrm_state *x, struct sk_buff *skb, __be32 net_seq);
+int xfrm_replay_overflow(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			 struct sk_buff *skb);
+int xfrm_replay_recheck(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			struct sk_buff *skb, __be32 net_seq);
 
 static inline int xfrm_aevent_is_on(struct net *net)
 {
@@ -2044,25 +2158,42 @@ static inline unsigned int xfrm_replay_state_esn_len(struct xfrm_replay_state_es
 	return sizeof(*replay_esn) + replay_esn->bmp_len * sizeof(__u32);
 }
 
+static inline struct xfrm_replay_state_esn *xfrm_replay_state_get(struct xfrm_sub_state *sx)
+{
+	return sx->replay_esn_valid ? sx->replay_esn : NULL;
+}
+
+static inline struct xfrm_replay_state_esn *xfrm_preplay_state_get(struct xfrm_sub_state *sx)
+{
+	struct xfrm_replay_state_esn *replay_esn = (struct xfrm_replay_state_esn *)&sx->replay_esn;
+
+	return (struct xfrm_replay_state_esn *)((u8 *)replay_esn +
+					      xfrm_replay_state_esn_len(replay_esn));
+}
+
 #ifdef CONFIG_XFRM_MIGRATE
+/*
 static inline int xfrm_replay_clone(struct xfrm_state *x,
 				    const struct xfrm_state *orig)
 {
-	/* Counters synced later in xfrm_replay_sync() */
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
+	const struct xfrm_sub_state *sx_orig = xfrm_sub_state_get_const(orig, orig->id.proto);
+	int i;
 
-	x->replay = orig->replay;
-	x->preplay = orig->preplay;
-
-	if (orig->replay_esn) {
-		x->replay_esn = kmemdup(orig->replay_esn,
-				xfrm_replay_state_esn_len(orig->replay_esn),
-				GFP_KERNEL);
-		if (!x->replay_esn)
+	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+		if (!sx_orig[i].replay_esn)
+			continue;
+		sx[i].replay_esn = kmemdup(sx_orig[i].replay_esn,
+					 xfrm_replay_state_esn_len(sx_orig[i].replay_esn),
+					 GFP_KERNEL);
+		if (!sx[i].replay_esn)
 			return -ENOMEM;
-		x->preplay_esn = kmemdup(orig->preplay_esn,
-				xfrm_replay_state_esn_len(orig->preplay_esn),
-				GFP_KERNEL);
-		if (!x->preplay_esn)
+		if (!sx_orig[i].preplay_esn)
+			continue;
+		sx[i].preplay_esn = kmemdup(sx_orig[i].preplay_esn,
+					  xfrm_replay_state_esn_len(sx_orig[i].preplay_esn),
+					  GFP_KERNEL);
+		if (!sx[i].preplay_esn)
 			return -ENOMEM;
 	}
 
@@ -2071,31 +2202,45 @@ static inline int xfrm_replay_clone(struct xfrm_state *x,
 
 static inline void xfrm_replay_sync(struct xfrm_state *x, const struct xfrm_state *orig)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
+	const struct xfrm_sub_state *sx_orig = xfrm_sub_state_get_const(orig, orig->id.proto);
+
 	x->replay = orig->replay;
 	x->preplay = orig->preplay;
 
-	if (orig->replay_esn) {
-		memcpy(x->replay_esn, orig->replay_esn,
-				xfrm_replay_state_esn_len(orig->replay_esn));
+	if (sx_orig->replay_esn) {
+		memcpy(sx->replay_esn, sx_orig->replay_esn,
+			xfrm_replay_state_esn_len(sx_orig->replay_esn));
 
-		memcpy(x->preplay_esn, orig->preplay_esn,
-				xfrm_replay_state_esn_len(orig->preplay_esn));
+		memcpy(sx->preplay_esn, sx_orig->preplay_esn,
+			xfrm_replay_state_esn_len(sx_orig->preplay_esn));
 	}
 }
+*/
 
-static inline void xfrm_migrate_sync(struct xfrm_state *x,
-					  const struct xfrm_state *orig)
+/* The caller holds the old state's sub-state and metadata writer locks. */
+static inline int xfrm_migrate_sub_state(struct xfrm_state *x,
+					 struct xfrm_state *orig)
 {
-	/* called under lock so no race conditions or mallocs allowed */
-	memcpy(&x->curlft, &orig->curlft, sizeof(x->curlft));
-	xfrm_replay_sync(x, orig);
+	struct xfrm_sub_state_rcu *rsx;
+
+	lockdep_assert_held(&orig->lock);
+	lockdep_assert_held(&orig->slock.lock);
+	if (x->id.proto != orig->id.proto)
+		return -EINVAL;
+
+	x->curlft = orig->curlft;
+	rsx = rcu_replace_pointer(orig->rsx,
+				  rcu_dereference_protected(x->rsx, 1),
+				  lockdep_is_held(&orig->lock));
+	rcu_assign_pointer(x->rsx, rsx);
+	return 0;
 }
 
 static inline struct xfrm_algo_aead *xfrm_algo_aead_clone(struct xfrm_algo_aead *orig)
 {
 	return kmemdup(orig, aead_len(orig), GFP_KERNEL);
 }
-
 
 static inline struct xfrm_algo *xfrm_algo_clone(struct xfrm_algo *orig)
 {

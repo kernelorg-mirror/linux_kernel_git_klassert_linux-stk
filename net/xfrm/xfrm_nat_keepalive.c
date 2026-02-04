@@ -185,22 +185,21 @@ static int nat_keepalive_work_collect(struct xfrm_state *x, int count, void *ptr
 static void nat_keepalive_work_single(struct xfrm_state *x,
 				      struct nat_keepalive_work_ctx *ctx)
 {
+	struct xfrm_sub_state *sx;
 	bool send_keepalive = false;
 	struct nat_keepalive ka;
 	time64_t next_run = 0;
 	u32 interval;
 	int delta;
 
-	spin_lock_bh(&x->lock);
-
-	if (x->km.state == XFRM_STATE_DEAD)
-		goto out;
-
+	xfrm_sub_state_lock(x);
+	write_seqlock(&x->slock);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	interval = x->nat_keepalive_interval;
-	if (!interval)
-		goto out;
+	if (!sx || x->km.state == XFRM_STATE_DEAD || !interval)
+		goto unlock;
 
-	delta = (int)(ctx->now - x->lastused);
+	delta = (int)(ctx->now - sx->lastused);
 	if (delta < interval) {
 		x->nat_keepalive_expiration = ctx->now + interval - delta;
 		next_run = x->nat_keepalive_expiration;
@@ -212,8 +211,9 @@ static void nat_keepalive_work_single(struct xfrm_state *x,
 		send_keepalive = true;
 	}
 
-out:
-	spin_unlock_bh(&x->lock);
+unlock:
+	write_sequnlock(&x->slock);
+	xfrm_sub_state_unlock(x);
 
 	if (send_keepalive)
 		nat_keepalive_send(&ka);

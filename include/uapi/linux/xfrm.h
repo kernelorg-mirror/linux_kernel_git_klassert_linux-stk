@@ -334,6 +334,7 @@ enum xfrm_attr_type_t {
 	XFRMA_IPTFS_MAX_QSIZE,	/* __u32 out: max ingress queue size (octets) */
 	XFRMA_IPTFS_PKT_SIZE,	/* __u32 out: size of outer packet, 0 for PMTU */
 	XFRMA_SUB_SA,		/* struct xfrm_subsa_info */
+	XFRMA_SUB_SA_ID,	/* __u16 */
 	__XFRMA_MAX
 
 #define XFRMA_OUTPUT_MARK XFRMA_SET_MARK	/* Compatibility */

@@ -1881,7 +1881,11 @@ static int iptfs_output_collect(struct net *net, struct sock *sk, struct sk_buff
 	/* We can be running on multiple cores and from the network softirq or
 	 * from user context depending on where the packet is coming from.
 	 */
-	spin_lock_bh(&x->lock);
+
+	/* This does not protect anything from struct xfrm_state.
+	 * Instead it is use as a global lock for packet queueing.
+	 * this does not work with EESP.*/
+	xfrm_sub_state_lock_bh(x);
 
 	skb_list_walk_safe(segs, skb, nskb) {
 		skb_mark_not_on_list(skb);
@@ -1921,7 +1925,7 @@ nospace:
 		trace_iptfs_timer_start(xtfs, xtfs->init_delay_ns);
 	}
 
-	spin_unlock_bh(&x->lock);
+	xfrm_sub_state_unlock_bh(x);
 	return 0;
 }
 
@@ -2336,12 +2340,15 @@ static enum hrtimer_restart iptfs_delay_timer(struct hrtimer *me)
 	 * ingress packets for us to process and transmit.
 	 */
 
-	spin_lock(&x->lock);
+	/* XXX: This does not protect anything from xfrm_state,
+	 * instead it is used as a global lock to hold off packet
+	 * queueing. This does not work with EESP. */
+	xfrm_sub_state_lock(x);
 	__skb_queue_head_init(&list);
 	skb_queue_splice_init(&xtfs->queue, &list);
 	xtfs->queue_size = 0;
 	settime = xtfs->iptfs_settime;
-	spin_unlock(&x->lock);
+	xfrm_sub_state_unlock(x);
 
 	/* After the above unlock, packets can begin queuing again, and the
 	 * timer can be set again, from another CPU either in softirq or user
@@ -2731,12 +2738,16 @@ static void iptfs_destroy_state(struct xfrm_state *x)
 	if (!xtfs)
 		return;
 
+	/* This does not protect anything from struct xfrm_state.
+	 * Instead it is use as a global lock for packet queueing.
+	 * this does not work with EESP.*/
+
+	xfrm_sub_state_lock_bh(xtfs->x);
 	hrtimer_cancel(&xtfs->iptfs_timer);
 
-	spin_lock_bh(&xtfs->x->lock);
 	__skb_queue_head_init(&list);
 	skb_queue_splice_init(&xtfs->queue, &list);
-	spin_unlock_bh(&xtfs->x->lock);
+	xfrm_sub_state_unlock_bh(xtfs->x);
 
 	while ((skb = __skb_dequeue(&list)))
 		kfree_skb(skb);

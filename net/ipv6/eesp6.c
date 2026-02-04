@@ -23,15 +23,19 @@
 #ifdef CONFIG_INET6_ESPINTCP
 static struct sock *eesp6_find_tcp_sk(struct xfrm_state *x)
 {
-	struct xfrm_encap_tmpl *encap = x->encap;
+	struct xfrm_encap_tmpl *encap;
 	struct net *net = xs_net(x);
 	__be16 sport, dport;
+	unsigned int seq;
 	struct sock *sk;
 
-	spin_lock_bh(&x->lock);
-	sport = encap->encap_sport;
-	dport = encap->encap_dport;
-	spin_unlock_bh(&x->lock);
+	do {
+		seq = read_seqbegin(&x->slock);
+
+		encap = x->encap;
+		sport = encap->encap_sport;
+		dport = encap->encap_dport;
+	} while (read_seqretry(&x->slock, seq));
 
 	sk = __inet6_lookup_established(net, &x->id.daddr.in6, dport,
 					&x->props.saddr.in6, ntohs(sport), 0, 0);

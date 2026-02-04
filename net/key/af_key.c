@@ -792,6 +792,7 @@ static struct sk_buff *__pfkey_xfrm_state2msg(const struct xfrm_state *x,
 	int sockaddr_size;
 	struct xfrm_encap_tmpl *natt = NULL;
 	int mode;
+	struct xfrm_sub_state_rcu *rsx;
 
 	/* address family check */
 	sockaddr_size = pfkey_sockaddr_size(x->props.family);
@@ -915,13 +916,16 @@ static struct sk_buff *__pfkey_xfrm_state2msg(const struct xfrm_state *x,
 		lifetime->sadb_lifetime_addtime = x->lft.soft_add_expires_seconds;
 		lifetime->sadb_lifetime_usetime = x->lft.soft_use_expires_seconds;
 	}
+
+	rsx = rcu_dereference(x->rsx);
+
 	/* current time */
 	lifetime = skb_put(skb, sizeof(struct sadb_lifetime));
 	lifetime->sadb_lifetime_len =
 		sizeof(struct sadb_lifetime)/sizeof(uint64_t);
 	lifetime->sadb_lifetime_exttype = SADB_EXT_LIFETIME_CURRENT;
-	lifetime->sadb_lifetime_allocations = x->curlft.packets;
-	lifetime->sadb_lifetime_bytes = x->curlft.bytes;
+	lifetime->sadb_lifetime_allocations = rsx->sx->curlbt.packets;
+	lifetime->sadb_lifetime_bytes = rsx->sx->curlbt.bytes;
 	lifetime->sadb_lifetime_addtime = x->curlft.add_time;
 	lifetime->sadb_lifetime_usetime = x->curlft.use_time;
 	/* src address */
@@ -1142,7 +1146,7 @@ static struct xfrm_state * pfkey_msg2xfrm_state(struct net *net,
 	x->id.proto = proto;
 	x->id.spi = sa->sadb_sa_spi;
 	x->props.replay_window = min_t(unsigned int, sa->sadb_sa_replay,
-					(sizeof(x->replay.bitmap) * 8));
+					(sizeof_field(struct xfrm_replay_state, bitmap) * 8));
 	if (sa->sadb_sa_flags & SADB_SAFLAGS_NOECN)
 		x->props.flags |= XFRM_STATE_NOECN;
 	if (sa->sadb_sa_flags & SADB_SAFLAGS_DECAP_DSCP)
@@ -1439,11 +1443,11 @@ static int pfkey_acquire(struct sock *sk, struct sk_buff *skb, const struct sadb
 	if (x == NULL)
 		return 0;
 
-	spin_lock_bh(&x->lock);
+	write_seqlock_bh(&x->slock);
 	if (x->km.state == XFRM_STATE_ACQ)
 		x->km.state = XFRM_STATE_ERROR;
 
-	spin_unlock_bh(&x->lock);
+	write_sequnlock_bh(&x->slock);
 	xfrm_state_put(x);
 	return 0;
 }

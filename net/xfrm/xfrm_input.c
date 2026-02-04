@@ -477,8 +477,9 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 	struct net_device *dev = skb->dev;
 	int err;
 	__be32 seq;
-	__be32 seq_hi;
+	__be32 seq_hi = 0;
 	struct xfrm_state *x = NULL;
+	struct xfrm_sub_state *sx = NULL;
 	xfrm_address_t *daddr;
 	u32 mark = skb->mark;
 	unsigned int family = AF_UNSPEC;
@@ -488,6 +489,8 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 	bool crypto_done = false;
 	struct xfrm_offload *xo = xfrm_offload(skb);
 	struct sec_path *sp;
+	unsigned int stat = 0;
+	unsigned int seql;
 
 	if (encap_type < 0 || (xo && (xo->flags & XFRM_GRO || encap_type == 0 ||
 				      encap_type == UDP_ENCAP_ESPINUDP))) {
@@ -515,7 +518,12 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 		if (encap_type == -1) {
 			async = 1;
 			seq = XFRM_SKB_CB(skb)->seq.input.low;
-			spin_lock(&x->lock);
+			xfrm_sub_state_lock(x);
+			sx = xfrm_sub_state_get(x, x->id.proto);
+			if (!sx) {
+				XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
+				goto drop_unlock;
+			}
 			goto resume;
 		}
 		/* GRO call */
@@ -534,7 +542,17 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 
 					xfrm_audit_state_icvfail(x, skb,
 								 x->type->proto);
-					x->stats.integrity_failed++;
+
+					xfrm_sub_state_lock(x);
+					sx = xfrm_sub_state_get(x, x->id.proto);
+					if (!sx) {
+						XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
+						goto drop_unlock;
+					}
+
+					sx->stats.integrity_failed++;
+					xfrm_sub_state_unlock(x);
+
 					XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR);
 					goto drop;
 				}
@@ -625,48 +643,58 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 		}
 
 process:
-		seq_hi = htonl(xfrm_replay_seqhi(x, seq));
+		do {
+			seql = read_seqbegin(&x->slock);
+			stat = 0;
+
+			if (unlikely(x->km.state != XFRM_STATE_VALID)) {
+				if (x->km.state == XFRM_STATE_ACQ)
+					stat = LINUX_MIB_XFRMACQUIREERROR;
+				else
+					stat = LINUX_MIB_XFRMINSTATEINVALID;
+			}
+			if (!stat && (x->encap ? x->encap->encap_type : 0) != encap_type)
+				stat = LINUX_MIB_XFRMINSTATEMISMATCH;
+
+			if (!stat && xfrm_tunnel_check(skb, x, family))
+				stat = LINUX_MIB_XFRMINSTATEMODEERROR;
+		} while (read_seqretry(&x->slock, seql));
+
+		if (stat) {
+			XFRM_INC_STATS(net, stat);
+			goto drop;
+		}
+
+		if (x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
+			xfrm_dev_state_update_stats(x);
+		xfrm_sub_state_lock(x);
+
+		sx = xfrm_sub_state_get(x, x->id.proto);
+		if (!sx) {
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
+			goto drop_unlock;
+		}
+
+		if (x->props.flags & XFRM_STATE_ESN)
+			seq_hi = htonl(xfrm_replay_seqhi(sx, seq));
 
 		XFRM_SKB_CB(skb)->seq.input.low = seq;
 		XFRM_SKB_CB(skb)->seq.input.hi = seq_hi;
-
-		spin_lock(&x->lock);
-
-		if (unlikely(x->km.state != XFRM_STATE_VALID)) {
-			if (x->km.state == XFRM_STATE_ACQ)
-				XFRM_INC_STATS(net, LINUX_MIB_XFRMACQUIREERROR);
-			else
-				XFRM_INC_STATS(net,
-					       LINUX_MIB_XFRMINSTATEINVALID);
-			goto drop_unlock;
-		}
-
-		if ((x->encap ? x->encap->encap_type : 0) != encap_type) {
-			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEMISMATCH);
-			goto drop_unlock;
-		}
-
-		seq_hi = htonl(xfrm_replay_seqhi(x, seq));
-		printk("xfrm_input: spi 0x%x seq %d seq_hi %d\n", spi, seq, seq_hi);
-
-		if (xfrm_replay_check(x, skb, seq)) {
-			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATESEQERROR);
-			goto drop_unlock;
-		}
-
-		if (xfrm_state_check_expire(x)) {
+	
+		if (xfrm_state_check_expire(x, sx)) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEEXPIRED);
 			goto drop_unlock;
 		}
 
-		if (xfrm_tunnel_check(skb, x, family)) {
-			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEMODEERROR);
+		if (xfrm_replay_check(x, sx, skb, seq)) {
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATESEQERROR);
+			xfrm_audit_state_replay(x, skb, seq);
 			goto drop_unlock;
 		}
 
 		if (!crypto_done) {
-			spin_unlock(&x->lock);
-			dev_hold(dev);
+			xfrm_sub_state_unlock(x);
+			dev_hold(skb->dev);
 
 			nexthdr = x->type->input(x, skb);
 			if (nexthdr == -EINPROGRESS) {
@@ -675,15 +703,28 @@ process:
 				return 0;
 			}
 
-			dev_put(dev);
-			spin_lock(&x->lock);
+			dev_put(skb->dev);
+			xfrm_sub_state_lock(x);
+
+			/* We need to refetch the sx pointer because we
+			 * left the RCU critical section.
+			 */
+			sx = xfrm_sub_state_get(x, x->id.proto);
+			if (!sx) {
+				XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
+				goto drop_unlock;
+			}
 		}
 resume:
+		if (unlikely(READ_ONCE(x->km.state) != XFRM_STATE_VALID)) {
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEINVALID);
+			goto drop_unlock;
+		}
 		if (nexthdr < 0) {
 			if (nexthdr == -EBADMSG) {
 				xfrm_audit_state_icvfail(x, skb,
 							 x->type->proto);
-				x->stats.integrity_failed++;
+				sx->stats.integrity_failed++;
 			}
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR);
 			goto drop_unlock;
@@ -692,18 +733,19 @@ resume:
 		/* only the first xfrm gets the encap type */
 		encap_type = 0;
 
-		if (!crypto_done && xfrm_replay_recheck(x, skb, seq)) {
+		if (!crypto_done && xfrm_replay_recheck(x, sx, skb, seq)) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATESEQERROR);
+			xfrm_audit_state_replay(x, skb, seq);
 			goto drop_unlock;
 		}
 
-		xfrm_replay_advance(x, seq);
+		xfrm_replay_advance(x, sx, seq);
 
-		x->curlft.bytes += skb->len;
-		x->curlft.packets++;
-		x->lastused = ktime_get_real_seconds();
+		sx->curlbt.bytes += skb->len;
+		sx->curlbt.packets++;
+		sx->lastused = ktime_get_real_seconds();
 
-		spin_unlock(&x->lock);
+		xfrm_sub_state_unlock(x);
 
 		XFRM_MODE_SKB_CB(skb)->protocol = nexthdr;
 
@@ -783,7 +825,7 @@ resume_decapped:
 	}
 
 drop_unlock:
-	spin_unlock(&x->lock);
+	xfrm_sub_state_unlock(x);
 drop:
 	if (async)
 		dev_put(dev);
