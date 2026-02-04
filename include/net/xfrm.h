@@ -185,9 +185,46 @@ enum xfrm_replay_mode {
 	XFRM_REPLAY_MODE_ESN,
 };
 
-/* Full description of state of transformer. */
+struct xfrm_sub_sa {
+	/* Sub SA data */
+
+	spinlock_t	____cacheline_aligned lock;
+
+	/* --- cacheline 9 boundary (576 bytes) --- */
+	struct xfrm_lifetime_cfg lft;
+	/* --- cacheline 10 boundary (640 bytes) --- */
+	struct xfrm_lifetime_cur curlft;
+
+	/* used to fix curlft->add_time when changing date */
+	long		saved_tmo;
+
+	/* Last used time */
+	time64_t		lastused;
+
+	/* State for replay detection */
+	struct xfrm_replay_state_esn *replay_esn;
+
+	/* Replay detection state at the time we sent the last notification */
+	struct xfrm_replay_state_esn *preplay_esn;
+
+	/* --- cacheline 11 boundary (704 bytes) --- */
+	struct hrtimer		mtimer;
+
+	/* --- cacheline 12 boundary (768 bytes) --- */
+	/* Statistics */
+	struct xfrm_stats	stats;
+
+	/* Replay detection notification settings */
+	u32			replay_maxage;
+	u32			replay_maxdiff;
+
+	/* Replay detection notification timer */
+	struct timer_list	rtimer;
+};
+
+/* Full description of state of transformer.
+ * Optimized for 64 bytes cachelines. */
 struct xfrm_state {
-	possible_net_t		xs_net;
 	union {
 		struct hlist_node	gclist;
 		struct hlist_node	bydst;
@@ -198,23 +235,38 @@ struct xfrm_state {
 	};
 	struct hlist_node	byspi;
 	struct hlist_node	byseq;
+
+	/* --- cacheline 1 boundary (64 bytes) --- */
 	struct hlist_node	state_cache;
 	struct hlist_node	state_cache_input;
 
-	refcount_t		refcnt;
-	spinlock_t		lock;
-
-	u32			pcpu_num;
-	struct xfrm_id		id;
-	struct xfrm_selector	sel;
-	struct xfrm_mark	mark;
-	u32			if_id;
-	u32			tfcpad;
-
-	u32			genid;
-
 	/* Key manager bits */
 	struct xfrm_state_walk	km;
+
+	/* --- cacheline 2 boundary (128 bytes) --- */
+	possible_net_t		xs_net;
+	refcount_t		refcnt;
+	u32			pcpu_num;
+
+	/* mapping change rate limiting */
+	__be16 new_mapping_sport;
+	u32 new_mapping;	/* seconds */
+	u32 mapping_maxage;	/* seconds for input SA */
+
+	/* NAT keepalive */
+	u32			nat_keepalive_interval; /* seconds */
+	time64_t		nat_keepalive_expiration;
+
+
+	struct xfrm_id		id;
+
+	/* --- cacheline 3 boundary (192 bytes) --- */
+
+	struct xfrm_selector	sel;
+	struct xfrm_mark	mark;
+
+	/* --- cacheline 4 boundary (256 bytes) --- */
+	u32			if_id;
 
 	/* Parameters of this state. */
 	struct {
@@ -232,81 +284,35 @@ struct xfrm_state {
 		struct xfrm_mark	smark;
 	} props;
 
-	struct xfrm_lifetime_cfg lft;
-
-	/* Data for transformer */
-	struct xfrm_algo_auth	*aalg;
-	struct xfrm_algo	*ealg;
-	struct xfrm_algo	*calg;
-	struct xfrm_algo_aead	*aead;
-	const char		*geniv;
-
-	/* mapping change rate limiting */
-	__be16 new_mapping_sport;
-	u32 new_mapping;	/* seconds */
-	u32 mapping_maxage;	/* seconds for input SA */
-
 	/* Data for encapsulator */
 	struct xfrm_encap_tmpl	*encap;
 
-	/* NAT keepalive */
-	u32			nat_keepalive_interval; /* seconds */
-	time64_t		nat_keepalive_expiration;
+	/* --- cacheline 5 boundary (320 bytes) --- */
 
-	/* Data for care-of address */
-	xfrm_address_t	*coaddr;
-
-	/* IPComp needs an IPIP tunnel for handling uncompressed packets */
-	struct xfrm_state	*tunnel;
-
-	/* If a tunnel, number of users + 1 */
-	atomic_t		tunnel_users;
-
-	/* State for replay detection */
-	struct xfrm_replay_state replay;
-	struct xfrm_replay_state_esn *replay_esn;
-
-	/* Replay detection state at the time we sent the last notification */
-	struct xfrm_replay_state preplay;
-	struct xfrm_replay_state_esn *preplay_esn;
+	/* Data for transformer */
+	struct xfrm_algo_auth	*aalg;
+	union {
+		struct xfrm_algo	*ealg;
+		struct xfrm_algo_aead	*aead;
+	};
+	const char		*geniv;
 
 	/* replay detection mode */
 	enum xfrm_replay_mode    repl_mode;
+
 	/* internal flag that only holds state for delayed aevent at the
 	 * moment
 	*/
 	u32			xflags;
 
-	/* Replay detection notification settings */
-	u32			replay_maxage;
-	u32			replay_maxdiff;
-
-	/* Replay detection notification timer */
-	struct timer_list	rtimer;
-
-	/* Statistics */
-	struct xfrm_stats	stats;
-
-	struct xfrm_lifetime_cur curlft;
-	struct hrtimer		mtimer;
-
 	struct xfrm_dev_offload xso;
 
-	/* used to fix curlft->add_time when changing date */
-	long		saved_tmo;
-
-	/* Last used time */
-	time64_t		lastused;
-
+	/* --- cacheline 6 boundary (384 bytes) --- */
 	struct page_frag xfrag;
 
 	/* Reference to data common to all the instances of this
 	 * transformer. */
 	const struct xfrm_type	*type;
-	struct xfrm_mode	inner_mode;
-	struct xfrm_mode	inner_mode_iaf;
-	struct xfrm_mode	outer_mode;
-
 	const struct xfrm_type_offload	*type_offload;
 
 	/* Security context */
@@ -315,10 +321,84 @@ struct xfrm_state {
 	/* Private data of this transformer, format is opaque,
 	 * interpreted by xfrm_type methods. */
 	void			*data;
-	u8			dir;
 
+	struct xfrm_mode	inner_mode;
+	struct xfrm_mode	inner_mode_iaf;
+	struct xfrm_mode	outer_mode;
+
+	u8			dir;
+	u32			genid;
+
+	/* --- cacheline 7 boundary (448 bytes) --- */
 	const struct xfrm_mode_cbs	*mode_cbs;
 	void				*mode_data;
+
+	/* 48 bytes hole */
+
+	/* --- cacheline 8 boundary (512 bytes) --- */
+	/* Sub SA data */
+
+	union {
+		struct xfrm_sub_sa xs;
+		struct {
+			spinlock_t	____cacheline_aligned lock;
+
+			/* --- cacheline 9 boundary (576 bytes) --- */
+			struct xfrm_lifetime_cfg lft;
+			/* --- cacheline 10 boundary (640 bytes) --- */
+			struct xfrm_lifetime_cur curlft;
+
+			/* used to fix curlft->add_time when changing date */
+			long		saved_tmo;
+
+			/* Last used time */
+			time64_t		lastused;
+
+			/* State for replay detection */
+			struct xfrm_replay_state_esn *replay_esn;
+
+			/* Replay detection state at the time we sent the last notification */
+			struct xfrm_replay_state_esn *preplay_esn;
+
+			/* --- cacheline 11 boundary (704 bytes) --- */
+			struct hrtimer		mtimer;
+
+			/* --- cacheline 12 boundary (768 bytes) --- */
+			/* Statistics */
+			struct xfrm_stats	stats;
+
+			/* Replay detection notification settings */
+			u32			replay_maxage;
+			u32			replay_maxdiff;
+
+			/* Replay detection notification timer */
+			struct timer_list	rtimer;
+			/* --- cacheline 13 boundary (832 bytes) was 40 bytes ago --- */
+
+			/* Legacy and non IPsec stuff goes here. */
+
+			/* State for replay detection */
+			struct xfrm_replay_state replay;
+
+			/* Replay detection state at the time we sent the last notification */
+			struct xfrm_replay_state preplay;
+
+			/* --- cacheline 14 boundary (896 bytes) --- */
+			/* Data for care-of address */
+			xfrm_address_t	*coaddr;
+
+			/* IPComp needs an IPIP tunnel for handling uncompressed packets */
+			struct xfrm_state	*tunnel;
+
+			/* If a tunnel, number of users + 1 */
+			atomic_t		tunnel_users;
+
+			u32			tfcpad;
+
+			struct xfrm_algo	*calg;
+		};
+	};
+
 };
 
 static inline struct net *xs_net(struct xfrm_state *x)
