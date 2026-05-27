@@ -290,14 +290,18 @@ static int esp6_input_tail(struct xfrm_state *x, struct sk_buff *skb)
 {
 	struct crypto_aead *aead = x->data;
 	struct xfrm_offload *xo = xfrm_offload(skb);
+	int hlen = sizeof(struct ip_esp_hdr) + crypto_aead_ivsize(aead);
 
-	if (!pskb_may_pull(skb, sizeof(struct ip_esp_hdr) + crypto_aead_ivsize(aead)))
+	if (!pskb_may_pull(skb, hlen))
 		return -EINVAL;
 
 	if (!(xo->flags & CRYPTO_DONE))
 		skb->ip_summed = CHECKSUM_NONE;
+	else
+		skb_postpull_rcsum(skb, skb_network_header(skb),
+				   skb_network_header_len(skb));
 
-	return esp6_input_done2(skb, 0);
+	return esp_input_done2(skb, 0);
 }
 
 static int esp6_xmit(struct xfrm_state *x, struct sk_buff *skb,  netdev_features_t features)
@@ -340,7 +344,7 @@ static int esp6_xmit(struct xfrm_state *x, struct sk_buff *skb,  netdev_features
 	esp.tailen = esp.tfclen + esp.plen + alen;
 
 	if (!hw_offload || !skb_is_gso(skb)) {
-		esp.nfrags = esp6_output_head(x, skb, &esp);
+		esp.nfrags = esp_output_head(x, skb, &esp);
 		if (esp.nfrags < 0)
 			return esp.nfrags;
 	}
@@ -384,7 +388,7 @@ static int esp6_xmit(struct xfrm_state *x, struct sk_buff *skb,  netdev_features
 		return 0;
 	}
 
-	err = esp6_output_tail(x, skb, &esp);
+	err = esp_output_tail(x, skb, &esp);
 	if (err)
 		return err;
 
