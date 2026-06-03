@@ -29,10 +29,10 @@ static struct sock *esp6_find_tcp_sk(struct xfrm_state *x)
 	__be16 sport, dport;
 	struct sock *sk;
 
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 	sport = encap->encap_sport;
 	dport = encap->encap_dport;
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 
 	sk = __inet6_lookup_established(net, &x->id.daddr.in6, dport,
 					&x->props.saddr.in6, ntohs(sport), 0, 0);

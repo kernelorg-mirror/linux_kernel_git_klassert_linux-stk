@@ -355,11 +355,11 @@ static int esp_output_encap(struct xfrm_state *x, struct sk_buff *skb,
 
 	esph = ERR_PTR(-EOPNOTSUPP);
 
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 	sport = encap->encap_sport;
 	dport = encap->encap_dport;
 	encap_type = encap->encap_type;
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 
 	switch (encap_type) {
 	default:
@@ -417,10 +417,10 @@ int esp_output_head(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 
 			allocsize = ALIGN(tailen, L1_CACHE_BYTES);
 
-			spin_lock_bh(&x->lock);
+			spin_lock_bh(&x->sx->lock);
 
 			if (unlikely(!skb_page_frag_refill(allocsize, pfrag, GFP_ATOMIC))) {
-				spin_unlock_bh(&x->lock);
+				spin_unlock_bh(&x->sx->lock);
 				goto cow;
 			}
 
@@ -439,7 +439,7 @@ int esp_output_head(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 
 			pfrag->offset = pfrag->offset + allocsize;
 
-			spin_unlock_bh(&x->lock);
+			spin_unlock_bh(&x->sx->lock);
 
 			nfrags++;
 
@@ -527,9 +527,9 @@ int esp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 
 		allocsize = ALIGN(skb->data_len, L1_CACHE_BYTES);
 
-		spin_lock_bh(&x->lock);
+		spin_lock_bh(&x->sx->lock);
 		if (unlikely(!skb_page_frag_refill(allocsize, pfrag, GFP_ATOMIC))) {
-			spin_unlock_bh(&x->lock);
+			spin_unlock_bh(&x->sx->lock);
 			goto error_free;
 		}
 
@@ -540,7 +540,7 @@ int esp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 		/* replace page frags in skb with new page */
 		__skb_fill_page_desc(skb, 0, page, pfrag->offset, skb->data_len);
 		pfrag->offset = pfrag->offset + allocsize;
-		spin_unlock_bh(&x->lock);
+		spin_unlock_bh(&x->sx->lock);
 
 		sg_init_table(dsg, skb_shinfo(skb)->nr_frags + 1);
 		err = skb_to_sgvec(skb, dsg,

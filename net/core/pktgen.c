@@ -2699,11 +2699,13 @@ static u32 pktgen_dst_metrics[RTAX_MAX + 1] = {
 static int pktgen_output_ipsec(struct sk_buff *skb, struct pktgen_dev *pkt_dev)
 {
 	struct xfrm_state *x = pkt_dev->flows[pkt_dev->curfl].x;
+	struct xfrm_sub_state *sx;
 	int err = 0;
 	struct net *net = dev_net(pkt_dev->odev);
 
 	if (!x)
 		return 0;
+	sx = x->sx;
 	/* XXX: we dont support tunnel mode for now until
 	 * we resolve the dst issue
 	 */
@@ -2728,10 +2730,10 @@ static int pktgen_output_ipsec(struct sk_buff *skb, struct pktgen_dev *pkt_dev)
 		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEPROTOERROR);
 		goto error;
 	}
-	spin_lock_bh(&x->lock);
-	x->curlft.bytes += skb->len;
-	x->curlft.packets++;
-	spin_unlock_bh(&x->lock);
+	spin_lock_bh(&sx->lock);
+	sx->curlft.bytes += skb->len;
+	sx->curlft.packets++;
+	spin_unlock_bh(&sx->lock);
 error:
 	return err;
 }

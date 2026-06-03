@@ -899,10 +899,10 @@ static struct sk_buff *__pfkey_xfrm_state2msg(const struct xfrm_state *x,
 		lifetime->sadb_lifetime_len =
 			sizeof(struct sadb_lifetime)/sizeof(uint64_t);
 		lifetime->sadb_lifetime_exttype = SADB_EXT_LIFETIME_HARD;
-		lifetime->sadb_lifetime_allocations =  _X2KEY(x->lft.hard_packet_limit);
-		lifetime->sadb_lifetime_bytes = _X2KEY(x->lft.hard_byte_limit);
-		lifetime->sadb_lifetime_addtime = x->lft.hard_add_expires_seconds;
-		lifetime->sadb_lifetime_usetime = x->lft.hard_use_expires_seconds;
+		lifetime->sadb_lifetime_allocations =  _X2KEY(x->sx->lft.hard_packet_limit);
+		lifetime->sadb_lifetime_bytes = _X2KEY(x->sx->lft.hard_byte_limit);
+		lifetime->sadb_lifetime_addtime = x->sx->lft.hard_add_expires_seconds;
+		lifetime->sadb_lifetime_usetime = x->sx->lft.hard_use_expires_seconds;
 	}
 	/* soft time */
 	if (hsc & 1) {
@@ -910,20 +910,20 @@ static struct sk_buff *__pfkey_xfrm_state2msg(const struct xfrm_state *x,
 		lifetime->sadb_lifetime_len =
 			sizeof(struct sadb_lifetime)/sizeof(uint64_t);
 		lifetime->sadb_lifetime_exttype = SADB_EXT_LIFETIME_SOFT;
-		lifetime->sadb_lifetime_allocations =  _X2KEY(x->lft.soft_packet_limit);
-		lifetime->sadb_lifetime_bytes = _X2KEY(x->lft.soft_byte_limit);
-		lifetime->sadb_lifetime_addtime = x->lft.soft_add_expires_seconds;
-		lifetime->sadb_lifetime_usetime = x->lft.soft_use_expires_seconds;
+		lifetime->sadb_lifetime_allocations =  _X2KEY(x->sx->lft.soft_packet_limit);
+		lifetime->sadb_lifetime_bytes = _X2KEY(x->sx->lft.soft_byte_limit);
+		lifetime->sadb_lifetime_addtime = x->sx->lft.soft_add_expires_seconds;
+		lifetime->sadb_lifetime_usetime = x->sx->lft.soft_use_expires_seconds;
 	}
 	/* current time */
 	lifetime = skb_put(skb, sizeof(struct sadb_lifetime));
 	lifetime->sadb_lifetime_len =
 		sizeof(struct sadb_lifetime)/sizeof(uint64_t);
 	lifetime->sadb_lifetime_exttype = SADB_EXT_LIFETIME_CURRENT;
-	lifetime->sadb_lifetime_allocations = x->curlft.packets;
-	lifetime->sadb_lifetime_bytes = x->curlft.bytes;
-	lifetime->sadb_lifetime_addtime = x->curlft.add_time;
-	lifetime->sadb_lifetime_usetime = x->curlft.use_time;
+	lifetime->sadb_lifetime_allocations = x->sx->curlft.packets;
+	lifetime->sadb_lifetime_bytes = x->sx->curlft.bytes;
+	lifetime->sadb_lifetime_addtime = x->sx->curlft.add_time;
+	lifetime->sadb_lifetime_usetime = x->sx->curlft.use_time;
 	/* src address */
 	addr = skb_put(skb, sizeof(struct sadb_address) + sockaddr_size);
 	addr->sadb_address_len =
@@ -1152,17 +1152,17 @@ static struct xfrm_state * pfkey_msg2xfrm_state(struct net *net,
 
 	lifetime = ext_hdrs[SADB_EXT_LIFETIME_HARD - 1];
 	if (lifetime != NULL) {
-		x->lft.hard_packet_limit = _KEY2X(lifetime->sadb_lifetime_allocations);
-		x->lft.hard_byte_limit = _KEY2X(lifetime->sadb_lifetime_bytes);
-		x->lft.hard_add_expires_seconds = lifetime->sadb_lifetime_addtime;
-		x->lft.hard_use_expires_seconds = lifetime->sadb_lifetime_usetime;
+		x->sx->lft.hard_packet_limit = _KEY2X(lifetime->sadb_lifetime_allocations);
+		x->sx->lft.hard_byte_limit = _KEY2X(lifetime->sadb_lifetime_bytes);
+		x->sx->lft.hard_add_expires_seconds = lifetime->sadb_lifetime_addtime;
+		x->sx->lft.hard_use_expires_seconds = lifetime->sadb_lifetime_usetime;
 	}
 	lifetime = ext_hdrs[SADB_EXT_LIFETIME_SOFT - 1];
 	if (lifetime != NULL) {
-		x->lft.soft_packet_limit = _KEY2X(lifetime->sadb_lifetime_allocations);
-		x->lft.soft_byte_limit = _KEY2X(lifetime->sadb_lifetime_bytes);
-		x->lft.soft_add_expires_seconds = lifetime->sadb_lifetime_addtime;
-		x->lft.soft_use_expires_seconds = lifetime->sadb_lifetime_usetime;
+		x->sx->lft.soft_packet_limit = _KEY2X(lifetime->sadb_lifetime_allocations);
+		x->sx->lft.soft_byte_limit = _KEY2X(lifetime->sadb_lifetime_bytes);
+		x->sx->lft.soft_add_expires_seconds = lifetime->sadb_lifetime_addtime;
+		x->sx->lft.soft_use_expires_seconds = lifetime->sadb_lifetime_usetime;
 	}
 
 	sec_ctx = ext_hdrs[SADB_X_EXT_SEC_CTX - 1];
@@ -1438,11 +1438,11 @@ static int pfkey_acquire(struct sock *sk, struct sk_buff *skb, const struct sadb
 	if (x == NULL)
 		return 0;
 
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 	if (x->km.state == XFRM_STATE_ACQ)
 		x->km.state = XFRM_STATE_ERROR;
 
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 	xfrm_state_put(x);
 	return 0;
 }

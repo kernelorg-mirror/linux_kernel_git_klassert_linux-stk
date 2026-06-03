@@ -492,6 +492,7 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct xfrm_state *x = dst->xfrm;
+	struct xfrm_sub_state *sx = x->sx;
 	struct net *net = xs_net(x);
 
 	if (err <= 0 || x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
@@ -512,7 +513,7 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 			goto error_nolock;
 		}
 
-		spin_lock_bh(&x->lock);
+		spin_lock_bh(&sx->lock);
 
 		if (unlikely(x->km.state != XFRM_STATE_VALID)) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEINVALID);
@@ -532,11 +533,11 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 			goto error;
 		}
 
-		x->curlft.bytes += skb->len;
-		x->curlft.packets++;
-		x->lastused = ktime_get_real_seconds();
+		sx->curlft.bytes += skb->len;
+		sx->curlft.packets++;
+		sx->lastused = ktime_get_real_seconds();
 
-		spin_unlock_bh(&x->lock);
+		spin_unlock_bh(&sx->lock);
 
 		skb_dst_force(skb);
 		if (!skb_dst(skb)) {
@@ -575,7 +576,7 @@ resume:
 	return 0;
 
 error:
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&sx->lock);
 error_nolock:
 	kfree_skb(skb);
 out:

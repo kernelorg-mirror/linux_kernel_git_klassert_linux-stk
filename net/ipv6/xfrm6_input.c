@@ -285,18 +285,18 @@ int xfrm6_input_addr(struct sk_buff *skb, xfrm_address_t *daddr,
 			continue;
 		}
 
-		spin_lock(&x->lock);
+		spin_lock(&x->sx->lock);
 
 		if ((!i || (x->props.flags & XFRM_STATE_WILDRECV)) &&
 		    likely(x->km.state == XFRM_STATE_VALID) &&
 		    !xfrm_state_check_expire(x)) {
-			spin_unlock(&x->lock);
+			spin_unlock(&x->sx->lock);
 			if (x->type->input(x, skb) > 0) {
 				/* found a valid state */
 				break;
 			}
 		} else
-			spin_unlock(&x->lock);
+			spin_unlock(&x->sx->lock);
 
 		xfrm_state_put(x);
 		x = NULL;
@@ -310,12 +310,12 @@ int xfrm6_input_addr(struct sk_buff *skb, xfrm_address_t *daddr,
 
 	sp->xvec[sp->len++] = x;
 
-	spin_lock(&x->lock);
+	spin_lock(&x->sx->lock);
 
-	x->curlft.bytes += skb->len;
-	x->curlft.packets++;
+	x->sx->curlft.bytes += skb->len;
+	x->sx->curlft.packets++;
 
-	spin_unlock(&x->lock);
+	spin_unlock(&x->sx->lock);
 
 	return 1;
 

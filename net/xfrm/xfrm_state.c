@@ -48,6 +48,7 @@ static void xfrm_state_gc_task(struct work_struct *work);
 
 static unsigned int xfrm_state_hashmax __read_mostly = 1 * 1024 * 1024;
 static struct kmem_cache *xfrm_state_cache __ro_after_init;
+static struct kmem_cache *xfrm_sub_state_cache __ro_after_init;
 
 static DECLARE_WORK(xfrm_state_gc_work, xfrm_state_gc_task);
 static HLIST_HEAD(xfrm_state_gc_list);
@@ -604,6 +605,7 @@ EXPORT_SYMBOL(xfrm_state_free);
 static void xfrm_state_delete_tunnel(struct xfrm_state *x);
 static void xfrm_state_gc_destroy(struct xfrm_state *x)
 {
+	struct xfrm_sub_state *sx = x->sx;
 	if (x->mode_cbs && x->mode_cbs->destroy_state)
 		x->mode_cbs->destroy_state(x);
 	hrtimer_cancel(&x->mtimer);
@@ -614,8 +616,8 @@ static void xfrm_state_gc_destroy(struct xfrm_state *x)
 	kfree(x->calg);
 	kfree(x->encap);
 	kfree(x->coaddr);
-	kfree(x->replay_esn);
-	kfree(x->preplay_esn);
+	kfree(sx->replay_esn);
+	kfree(sx->preplay_esn);
 	xfrm_unset_type_offload(x);
 	xfrm_state_delete_tunnel(x);
 	if (x->type) {
@@ -648,39 +650,40 @@ static void xfrm_state_gc_task(struct work_struct *work)
 static enum hrtimer_restart xfrm_timer_handler(struct hrtimer *me)
 {
 	struct xfrm_state *x = container_of(me, struct xfrm_state, mtimer);
+	struct xfrm_sub_state *sx = x->sx;
 	enum hrtimer_restart ret = HRTIMER_NORESTART;
 	time64_t now = ktime_get_real_seconds();
 	time64_t next = TIME64_MAX;
 	int warn = 0;
 	int err = 0;
 
-	spin_lock(&x->lock);
+	spin_lock(&sx->lock);
 	xfrm_dev_state_update_stats(x);
 
 	if (x->km.state == XFRM_STATE_DEAD)
 		goto out;
 	if (x->km.state == XFRM_STATE_EXPIRED)
 		goto expired;
-	if (x->lft.hard_add_expires_seconds) {
-		time64_t tmo = x->lft.hard_add_expires_seconds +
-			x->curlft.add_time - now;
+	if (sx->lft.hard_add_expires_seconds) {
+		time64_t tmo = sx->lft.hard_add_expires_seconds +
+			sx->curlft.add_time - now;
 		if (tmo <= 0) {
 			if (x->xflags & XFRM_SOFT_EXPIRE) {
 				/* enter hard expire without soft expire first?!
 				 * setting a new date could trigger this.
 				 * workaround: fix x->curflt.add_time by below:
 				 */
-				x->curlft.add_time = now - x->saved_tmo - 1;
-				tmo = x->lft.hard_add_expires_seconds - x->saved_tmo;
+				sx->curlft.add_time = now - sx->saved_tmo - 1;
+				tmo = sx->lft.hard_add_expires_seconds - sx->saved_tmo;
 			} else
 				goto expired;
 		}
 		if (tmo < next)
 			next = tmo;
 	}
-	if (x->lft.hard_use_expires_seconds) {
-		time64_t tmo = x->lft.hard_use_expires_seconds +
-			(READ_ONCE(x->curlft.use_time) ? : now) - now;
+	if (sx->lft.hard_use_expires_seconds) {
+		time64_t tmo = sx->lft.hard_use_expires_seconds +
+			(READ_ONCE(sx->curlft.use_time) ? : now) - now;
 		if (tmo <= 0)
 			goto expired;
 		if (tmo < next)
@@ -688,21 +691,21 @@ static enum hrtimer_restart xfrm_timer_handler(struct hrtimer *me)
 	}
 	if (x->km.dying)
 		goto resched;
-	if (x->lft.soft_add_expires_seconds) {
-		time64_t tmo = x->lft.soft_add_expires_seconds +
-			x->curlft.add_time - now;
+	if (sx->lft.soft_add_expires_seconds) {
+		time64_t tmo = sx->lft.soft_add_expires_seconds +
+			sx->curlft.add_time - now;
 		if (tmo <= 0) {
 			warn = 1;
 			x->xflags &= ~XFRM_SOFT_EXPIRE;
 		} else if (tmo < next) {
 			next = tmo;
 			x->xflags |= XFRM_SOFT_EXPIRE;
-			x->saved_tmo = tmo;
+			sx->saved_tmo = tmo;
 		}
 	}
-	if (x->lft.soft_use_expires_seconds) {
-		time64_t tmo = x->lft.soft_use_expires_seconds +
-			(READ_ONCE(x->curlft.use_time) ? : now) - now;
+	if (sx->lft.soft_use_expires_seconds) {
+		time64_t tmo = sx->lft.soft_use_expires_seconds +
+			(READ_ONCE(sx->curlft.use_time) ? : now) - now;
 		if (tmo <= 0)
 			warn = 1;
 		else if (tmo < next)
@@ -731,15 +734,36 @@ expired:
 	xfrm_audit_state_delete(x, err ? 0 : 1, true);
 
 out:
-	spin_unlock(&x->lock);
+	spin_unlock(&sx->lock);
 	return ret;
 }
 
 static void xfrm_replay_timer_handler(struct timer_list *t);
 
+static struct xfrm_sub_state *xfrm_sub_state_alloc(struct xfrm_state *x)
+{
+	struct xfrm_sub_state *sx;
+
+	sx = kmem_cache_zalloc(xfrm_sub_state_cache, GFP_ATOMIC);
+	if (!sx)
+		return NULL;
+
+	sx->curlft.add_time = ktime_get_real_seconds();
+	sx->lft.soft_byte_limit = XFRM_INF;
+	sx->lft.soft_packet_limit = XFRM_INF;
+	sx->lft.hard_byte_limit = XFRM_INF;
+	sx->lft.hard_packet_limit = XFRM_INF;
+	sx->replay_maxage = 0;
+	sx->replay_maxdiff = 0;
+	spin_lock_init(&sx->lock);
+
+	return sx;
+}
+
 struct xfrm_state *xfrm_state_alloc(struct net *net)
 {
 	struct xfrm_state *x;
+	struct xfrm_sub_state *sx;
 
 	x = kmem_cache_zalloc(xfrm_state_cache, GFP_ATOMIC);
 
@@ -753,20 +777,22 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
 		INIT_HLIST_NODE(&x->bysrc);
 		INIT_HLIST_NODE(&x->byspi);
 		INIT_HLIST_NODE(&x->byseq);
+		x->pcpu_num = UINT_MAX;
+		x->mode_data = NULL;
+
 		hrtimer_setup(&x->mtimer, xfrm_timer_handler, CLOCK_BOOTTIME,
 			      HRTIMER_MODE_ABS_SOFT);
 		timer_setup(&x->rtimer, xfrm_replay_timer_handler, 0);
-		x->curlft.add_time = ktime_get_real_seconds();
-		x->lft.soft_byte_limit = XFRM_INF;
-		x->lft.soft_packet_limit = XFRM_INF;
-		x->lft.hard_byte_limit = XFRM_INF;
-		x->lft.hard_packet_limit = XFRM_INF;
-		x->replay_maxage = 0;
-		x->replay_maxdiff = 0;
-		x->pcpu_num = UINT_MAX;
-		spin_lock_init(&x->lock);
-		x->mode_data = NULL;
 	}
+
+	sx = xfrm_sub_state_alloc(x);
+	if (!sx) {
+		kmem_cache_free(xfrm_state_cache, x);
+		return NULL;
+	}
+
+	x->sx = sx;
+
 	return x;
 }
 EXPORT_SYMBOL(xfrm_state_alloc);
@@ -862,9 +888,9 @@ int xfrm_state_delete(struct xfrm_state *x)
 {
 	int err;
 
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 	err = __xfrm_state_delete(x);
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 
 	return err;
 }
@@ -1338,7 +1364,7 @@ static void xfrm_state_look_at(struct xfrm_policy *pol, struct xfrm_state *x,
 		    ((*best)->pcpu_num == UINT_MAX && x->pcpu_num == pcpu_id) ||
 		    (*best)->km.dying > x->km.dying ||
 		    ((*best)->km.dying == x->km.dying &&
-		     (*best)->curlft.add_time < x->curlft.add_time))
+		     (*best)->sx->curlft.add_time < x->sx->curlft.add_time))
 			*best = x;
 	} else if (x->km.state == XFRM_STATE_ACQ) {
 		if (!*best || x->pcpu_num == pcpu_id)
@@ -1591,7 +1617,7 @@ found:
 						  xfrm_state_deref_prot(net->xfrm.state_byseq, net) + h,
 						  x->xso.type);
 			}
-			x->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
+			x->sx->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
 			hrtimer_start(&x->mtimer,
 				      ktime_set(net->xfrm.sysctl_acq_expires, 0),
 				      HRTIMER_MODE_REL_SOFT);
@@ -1723,6 +1749,7 @@ static struct xfrm_state *xfrm_state_lookup_spi_proto(struct net *net, __be32 sp
 
 static void __xfrm_state_insert(struct xfrm_state *x)
 {
+	struct xfrm_sub_state *sx = x->sx;
 	struct net *net = xs_net(x);
 	unsigned int h;
 
@@ -1760,8 +1787,8 @@ static void __xfrm_state_insert(struct xfrm_state *x)
 	}
 
 	hrtimer_start(&x->mtimer, ktime_set(1, 0), HRTIMER_MODE_REL_SOFT);
-	if (x->replay_maxage)
-		mod_timer(&x->rtimer, jiffies + x->replay_maxage);
+	if (sx->replay_maxage)
+		mod_timer(&x->rtimer, jiffies + sx->replay_maxage);
 
 	net->xfrm.state_num++;
 
@@ -1869,7 +1896,7 @@ static struct xfrm_state *__find_acq_core(struct net *net,
 		x->if_id = if_id;
 		x->mark.v = m->v;
 		x->mark.m = m->m;
-		x->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
+		x->sx->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
 		xfrm_state_hold(x);
 		hrtimer_start(&x->mtimer,
 			      ktime_set(net->xfrm.sysctl_acq_expires, 0),
@@ -1978,14 +2005,18 @@ static struct xfrm_state *xfrm_state_clone_and_setup(struct xfrm_state *orig,
 					   struct xfrm_encap_tmpl *encap,
 					   struct xfrm_migrate *m)
 {
+	struct xfrm_sub_state *orig_sx = orig->sx;
 	struct net *net = xs_net(orig);
 	struct xfrm_state *x = xfrm_state_alloc(net);
+	struct xfrm_sub_state *sx;
+
 	if (!x)
 		goto out;
+	sx = x->sx;
 
 	memcpy(&x->id, &orig->id, sizeof(x->id));
 	memcpy(&x->sel, &orig->sel, sizeof(x->sel));
-	memcpy(&x->lft, &orig->lft, sizeof(x->lft));
+	memcpy(&sx->lft, &orig_sx->lft, sizeof(sx->lft));
 	x->props.mode = orig->props.mode;
 	x->props.replay_window = orig->props.replay_window;
 	x->props.reqid = orig->props.reqid;
@@ -2042,7 +2073,7 @@ static struct xfrm_state *xfrm_state_clone_and_setup(struct xfrm_state *orig,
 			goto error;
 	}
 
-	if (orig->replay_esn) {
+	if (orig_sx->replay_esn) {
 		if (xfrm_replay_clone(x, orig))
 			goto error;
 	}
@@ -2056,15 +2087,15 @@ static struct xfrm_state *xfrm_state_clone_and_setup(struct xfrm_state *orig,
 	x->pcpu_num = orig->pcpu_num;
 	x->if_id = orig->if_id;
 	x->tfcpad = orig->tfcpad;
-	x->replay_maxdiff = orig->replay_maxdiff;
-	x->replay_maxage = orig->replay_maxage;
-	memcpy(&x->curlft, &orig->curlft, sizeof(x->curlft));
+	sx->replay_maxdiff = orig_sx->replay_maxdiff;
+	sx->replay_maxage = orig_sx->replay_maxage;
+	memcpy(&sx->curlft, &orig_sx->curlft, sizeof(sx->curlft));
 	x->km.state = orig->km.state;
 	x->km.seq = orig->km.seq;
 	x->replay = orig->replay;
 	x->preplay = orig->preplay;
 	x->mapping_maxage = orig->mapping_maxage;
-	x->lastused = orig->lastused;
+	sx->lastused = orig_sx->lastused;
 	x->new_mapping = 0;
 	x->new_mapping_sport = 0;
 	x->dir = orig->dir;
@@ -2185,6 +2216,7 @@ EXPORT_SYMBOL(xfrm_state_migrate);
 
 int xfrm_state_update(struct xfrm_state *x)
 {
+	struct xfrm_sub_state *sx = x->sx;
 	struct xfrm_state *x1, *to_put;
 	int err;
 	int use_spi = xfrm_id_proto_match(x->id.proto, IPSEC_PROTO_ANY);
@@ -2237,7 +2269,7 @@ out:
 	}
 
 	err = -EINVAL;
-	spin_lock_bh(&x1->lock);
+	spin_lock_bh(&x1->sx->lock);
 	if (likely(x1->km.state == XFRM_STATE_VALID)) {
 		if (x->encap && x1->encap &&
 		    x->encap->encap_type == x1->encap->encap_type)
@@ -2250,12 +2282,12 @@ out:
 		}
 		if (!use_spi && memcmp(&x1->sel, &x->sel, sizeof(x1->sel)))
 			memcpy(&x1->sel, &x->sel, sizeof(x1->sel));
-		memcpy(&x1->lft, &x->lft, sizeof(x1->lft));
+		memcpy(&x1->sx->lft, &sx->lft, sizeof(x1->sx->lft));
 		x1->km.dying = 0;
 
 		hrtimer_start(&x1->mtimer, ktime_set(1, 0),
 			      HRTIMER_MODE_REL_SOFT);
-		if (READ_ONCE(x1->curlft.use_time))
+		if (READ_ONCE(x1->sx->curlft.use_time))
 			xfrm_state_check_expire(x1);
 
 		if (x->props.smark.m || x->props.smark.v || x->if_id) {
@@ -2278,7 +2310,7 @@ out:
 	}
 
 fail:
-	spin_unlock_bh(&x1->lock);
+	spin_unlock_bh(&x1->sx->lock);
 
 	xfrm_state_put(x1);
 
@@ -2288,6 +2320,7 @@ EXPORT_SYMBOL(xfrm_state_update);
 
 int xfrm_state_check_expire(struct xfrm_state *x)
 {
+	struct xfrm_sub_state *sx = x->sx;
 	/* All counters which are needed to decide if state is expired
 	 * are handled by SW for non-packet offload modes. Simply skip
 	 * the following update and save extra boilerplate in drivers.
@@ -2295,19 +2328,19 @@ int xfrm_state_check_expire(struct xfrm_state *x)
 	if (x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
 		xfrm_dev_state_update_stats(x);
 
-	if (!READ_ONCE(x->curlft.use_time))
-		WRITE_ONCE(x->curlft.use_time, ktime_get_real_seconds());
+	if (!READ_ONCE(sx->curlft.use_time))
+		WRITE_ONCE(sx->curlft.use_time, ktime_get_real_seconds());
 
-	if (x->curlft.bytes >= x->lft.hard_byte_limit ||
-	    x->curlft.packets >= x->lft.hard_packet_limit) {
+	if (sx->curlft.bytes >= sx->lft.hard_byte_limit ||
+	    sx->curlft.packets >= sx->lft.hard_packet_limit) {
 		x->km.state = XFRM_STATE_EXPIRED;
 		hrtimer_start(&x->mtimer, 0, HRTIMER_MODE_REL_SOFT);
 		return -EINVAL;
 	}
 
 	if (!x->km.dying &&
-	    (x->curlft.bytes >= x->lft.soft_byte_limit ||
-	     x->curlft.packets >= x->lft.soft_packet_limit)) {
+	    (sx->curlft.bytes >= sx->lft.soft_byte_limit ||
+	     sx->curlft.packets >= sx->lft.soft_packet_limit)) {
 		x->km.dying = 1;
 		km_state_expired(x, 0, 0);
 	}
@@ -2590,7 +2623,7 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high,
 	u32 range = high - low + 1;
 	__be32 newspi = 0;
 
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 	if (x->km.state == XFRM_STATE_DEAD) {
 		NL_SET_ERR_MSG(extack, "Target ACQUIRE is in DEAD state");
 		goto unlock;
@@ -2636,7 +2669,7 @@ next:
 		NL_SET_ERR_MSG(extack, "No SPI available in the requested range");
 
 unlock:
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 
 	return err;
 }
@@ -2727,9 +2760,9 @@ EXPORT_SYMBOL(xfrm_state_walk_done);
 
 static void xfrm_replay_timer_handler(struct timer_list *t)
 {
-	struct xfrm_state *x = timer_container_of(x, t, rtimer);
+	struct xfrm_state *x = container_of(t, struct xfrm_state, rtimer);
 
-	spin_lock(&x->lock);
+	spin_lock(&x->sx->lock);
 
 	if (x->km.state == XFRM_STATE_VALID) {
 		if (xfrm_aevent_is_on(xs_net(x)))
@@ -2738,7 +2771,7 @@ static void xfrm_replay_timer_handler(struct timer_list *t)
 			x->xflags |= XFRM_TIME_DEFER;
 	}
 
-	spin_unlock(&x->lock);
+	spin_unlock(&x->sx->lock);
 }
 
 static LIST_HEAD(xfrm_km_list);
@@ -3273,9 +3306,12 @@ int __net_init xfrm_state_init(struct net *net)
 	struct hlist_head *ndst, *nsrc, *nspi, *nseq;
 	unsigned int sz;
 
-	if (net_eq(net, &init_net))
+	if (net_eq(net, &init_net)) {
 		xfrm_state_cache = KMEM_CACHE(xfrm_state,
 					      SLAB_HWCACHE_ALIGN | SLAB_PANIC);
+		xfrm_sub_state_cache = KMEM_CACHE(xfrm_sub_state,
+						  SLAB_HWCACHE_ALIGN | SLAB_PANIC);
+	}
 
 	INIT_LIST_HEAD(&net->xfrm.state_all);
 

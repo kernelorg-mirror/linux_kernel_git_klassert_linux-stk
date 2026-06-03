@@ -1770,7 +1770,7 @@ static bool iptfs_enqueue(struct xfrm_iptfs_data *xtfs, struct sk_buff *skb)
 	u64 newsz = xtfs->queue_size + skb->len;
 	struct iphdr *iph;
 
-	assert_spin_locked(&xtfs->x->lock);
+	assert_spin_locked(&xtfs->x->sx->lock);
 
 	if (newsz > xtfs->cfg.max_queue_size)
 		return false;
@@ -1878,7 +1878,7 @@ static int iptfs_output_collect(struct net *net, struct sock *sk, struct sk_buff
 	/* We can be running on multiple cores and from the network softirq or
 	 * from user context depending on where the packet is coming from.
 	 */
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 
 	skb_list_walk_safe(segs, skb, nskb) {
 		skb_mark_not_on_list(skb);
@@ -1918,7 +1918,7 @@ nospace:
 		trace_iptfs_timer_start(xtfs, xtfs->init_delay_ns);
 	}
 
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 	return 0;
 }
 
@@ -2331,12 +2331,12 @@ static enum hrtimer_restart iptfs_delay_timer(struct hrtimer *me)
 	 * ingress packets for us to process and transmit.
 	 */
 
-	spin_lock(&x->lock);
+	spin_lock(&x->sx->lock);
 	__skb_queue_head_init(&list);
 	skb_queue_splice_init(&xtfs->queue, &list);
 	xtfs->queue_size = 0;
 	settime = xtfs->iptfs_settime;
-	spin_unlock(&x->lock);
+	spin_unlock(&x->sx->lock);
 
 	/* After the above unlock, packets can begin queuing again, and the
 	 * timer can be set again, from another CPU either in softirq or user
@@ -2708,11 +2708,11 @@ static void iptfs_destroy_state(struct xfrm_state *x)
 	if (!xtfs)
 		return;
 
-	spin_lock_bh(&xtfs->x->lock);
+	spin_lock_bh(&xtfs->x->sx->lock);
 	hrtimer_cancel(&xtfs->iptfs_timer);
 	__skb_queue_head_init(&list);
 	skb_queue_splice_init(&xtfs->queue, &list);
-	spin_unlock_bh(&xtfs->x->lock);
+	spin_unlock_bh(&xtfs->x->sx->lock);
 
 	while ((skb = __skb_dequeue(&list)))
 		kfree_skb(skb);

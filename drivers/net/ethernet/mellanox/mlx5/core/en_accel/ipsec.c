@@ -62,26 +62,27 @@ static void mlx5e_ipsec_handle_sw_limits(struct work_struct *_work)
 		container_of(_work, struct mlx5e_ipsec_dwork, dwork.work);
 	struct mlx5e_ipsec_sa_entry *sa_entry = dwork->sa_entry;
 	struct xfrm_state *x = sa_entry->x;
+	struct xfrm_sub_state *sx = x->sx;
 
 	if (sa_entry->attrs.drop)
 		return;
 
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&sx->lock);
 	if (x->km.state == XFRM_STATE_EXPIRED) {
 		sa_entry->attrs.drop = true;
-		spin_unlock_bh(&x->lock);
+		spin_unlock_bh(&sx->lock);
 
 		mlx5e_accel_ipsec_fs_modify(sa_entry);
 		return;
 	}
 
 	if (x->km.state != XFRM_STATE_VALID) {
-		spin_unlock_bh(&x->lock);
+		spin_unlock_bh(&sx->lock);
 		return;
 	}
 
 	xfrm_state_check_expire(x);
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&sx->lock);
 
 	queue_delayed_work(sa_entry->ipsec->wq, &dwork->dwork,
 			   MLX5_IPSEC_RESCHED);
@@ -90,18 +91,19 @@ static void mlx5e_ipsec_handle_sw_limits(struct work_struct *_work)
 static bool mlx5e_ipsec_update_esn_state(struct mlx5e_ipsec_sa_entry *sa_entry)
 {
 	struct xfrm_state *x = sa_entry->x;
+	struct xfrm_sub_state *sx = x->sx;
 	u32 seq_bottom = 0;
 	u32 esn, esn_msb;
 	u8 overlap;
 
 	switch (x->xso.dir) {
 	case XFRM_DEV_OFFLOAD_IN:
-		esn = x->replay_esn->seq;
-		esn_msb = x->replay_esn->seq_hi;
+		esn = sx->replay_esn->seq;
+		esn_msb = sx->replay_esn->seq_hi;
 		break;
 	case XFRM_DEV_OFFLOAD_OUT:
-		esn = x->replay_esn->oseq;
-		esn_msb = x->replay_esn->oseq_hi;
+		esn = sx->replay_esn->oseq;
+		esn_msb = sx->replay_esn->oseq_hi;
 		break;
 	default:
 		WARN_ON(true);
@@ -110,11 +112,11 @@ static bool mlx5e_ipsec_update_esn_state(struct mlx5e_ipsec_sa_entry *sa_entry)
 
 	overlap = sa_entry->esn_state.overlap;
 
-	if (!x->replay_esn->replay_window) {
+	if (!sx->replay_esn->replay_window) {
 		seq_bottom = esn;
 	} else {
-		if (esn >= x->replay_esn->replay_window)
-			seq_bottom = esn - x->replay_esn->replay_window + 1;
+		if (esn >= sx->replay_esn->replay_window)
+			seq_bottom = esn - sx->replay_esn->replay_window + 1;
 
 		if (x->xso.type == XFRM_DEV_OFFLOAD_CRYPTO)
 			esn_msb = xfrm_replay_seqhi(x, htonl(seq_bottom));
@@ -146,11 +148,12 @@ static void mlx5e_ipsec_init_limits(struct mlx5e_ipsec_sa_entry *sa_entry,
 				    struct mlx5_accel_esp_xfrm_attrs *attrs)
 {
 	struct xfrm_state *x = sa_entry->x;
+	struct xfrm_sub_state *sx = x->sx;
 	s64 start_value, n;
 
-	attrs->lft.hard_packet_limit = x->lft.hard_packet_limit;
-	attrs->lft.soft_packet_limit = x->lft.soft_packet_limit;
-	if (x->lft.soft_packet_limit == XFRM_INF)
+	attrs->lft.hard_packet_limit = sx->lft.hard_packet_limit;
+	attrs->lft.soft_packet_limit = sx->lft.soft_packet_limit;
+	if (sx->lft.soft_packet_limit == XFRM_INF)
 		return;
 
 	/* Compute hard limit initial value and number of rounds.
@@ -221,9 +224,9 @@ static void mlx5e_ipsec_init_limits(struct mlx5e_ipsec_sa_entry *sa_entry,
 	 */
 
 	/* Start by estimating n and compute soft_value */
-	n = (x->lft.soft_packet_limit - attrs->lft.hard_packet_limit) / BIT_ULL(31);
+	n = (sx->lft.soft_packet_limit - attrs->lft.hard_packet_limit) / BIT_ULL(31);
 	start_value = attrs->lft.hard_packet_limit + n * BIT_ULL(31) -
-		      x->lft.soft_packet_limit;
+		      sx->lft.soft_packet_limit;
 
 	/* Compare against constraints and adjust n */
 	if (n < 0)
@@ -392,6 +395,7 @@ void mlx5e_ipsec_build_accel_xfrm_attrs(struct mlx5e_ipsec_sa_entry *sa_entry,
 					struct mlx5_accel_esp_xfrm_attrs *attrs)
 {
 	struct xfrm_state *x = sa_entry->x;
+	struct xfrm_sub_state *sx = x->sx;
 	struct aes_gcm_keymat *aes_gcm = &attrs->aes_gcm;
 	struct aead_geniv_ctx *geniv_ctx;
 	struct crypto_aead *aead;
@@ -432,7 +436,7 @@ void mlx5e_ipsec_build_accel_xfrm_attrs(struct mlx5e_ipsec_sa_entry *sa_entry,
 		    x->xso.type != XFRM_DEV_OFFLOAD_PACKET)
 			goto skip_replay_window;
 
-		switch (x->replay_esn->replay_window) {
+		switch (sx->replay_esn->replay_window) {
 		case 32:
 			attrs->replay_esn.replay_window =
 				MLX5_IPSEC_ASO_REPLAY_WIN_32BIT;
@@ -488,6 +492,8 @@ static int mlx5e_xfrm_validate_state(struct mlx5_core_dev *mdev,
 				     struct xfrm_state *x,
 				     struct netlink_ext_ack *extack)
 {
+	struct xfrm_sub_state *sx = x->sx;
+
 	if (x->props.aalgo != SADB_AALG_NONE) {
 		NL_SET_ERR_MSG_MOD(extack, "Cannot offload authenticated xfrm states");
 		return -EINVAL;
@@ -594,11 +600,11 @@ static int mlx5e_xfrm_validate_state(struct mlx5_core_dev *mdev,
 			return -EINVAL;
 		}
 
-		if (x->replay_esn && x->xso.dir == XFRM_DEV_OFFLOAD_IN &&
-		    x->replay_esn->replay_window != 32 &&
-		    x->replay_esn->replay_window != 64 &&
-		    x->replay_esn->replay_window != 128 &&
-		    x->replay_esn->replay_window != 256) {
+		if (sx->replay_esn && x->xso.dir == XFRM_DEV_OFFLOAD_IN &&
+		    sx->replay_esn->replay_window != 32 &&
+		    sx->replay_esn->replay_window != 64 &&
+		    sx->replay_esn->replay_window != 128 &&
+		    sx->replay_esn->replay_window != 256) {
 			NL_SET_ERR_MSG_MOD(extack, "Unsupported replay window size");
 			return -EINVAL;
 		}
@@ -608,26 +614,26 @@ static int mlx5e_xfrm_validate_state(struct mlx5_core_dev *mdev,
 			return -EINVAL;
 		}
 
-		if (x->lft.soft_byte_limit >= x->lft.hard_byte_limit &&
-		    x->lft.hard_byte_limit != XFRM_INF) {
+		if (sx->lft.soft_byte_limit >= sx->lft.hard_byte_limit &&
+		    sx->lft.hard_byte_limit != XFRM_INF) {
 			/* XFRM stack doesn't prevent such configuration :(. */
 			NL_SET_ERR_MSG_MOD(extack, "Hard byte limit must be greater than soft one");
 			return -EINVAL;
 		}
 
-		if (!x->lft.soft_byte_limit || !x->lft.hard_byte_limit) {
+		if (!sx->lft.soft_byte_limit || !sx->lft.hard_byte_limit) {
 			NL_SET_ERR_MSG_MOD(extack, "Soft/hard byte limits can't be 0");
 			return -EINVAL;
 		}
 
-		if (x->lft.soft_packet_limit >= x->lft.hard_packet_limit &&
-		    x->lft.hard_packet_limit != XFRM_INF) {
+		if (sx->lft.soft_packet_limit >= sx->lft.hard_packet_limit &&
+		    sx->lft.hard_packet_limit != XFRM_INF) {
 			/* XFRM stack doesn't prevent such configuration :(. */
 			NL_SET_ERR_MSG_MOD(extack, "Hard packet limit must be greater than soft one");
 			return -EINVAL;
 		}
 
-		if (!x->lft.soft_packet_limit || !x->lft.hard_packet_limit) {
+		if (!sx->lft.soft_packet_limit || !sx->lft.hard_packet_limit) {
 			NL_SET_ERR_MSG_MOD(extack, "Soft/hard packet limits can't be 0");
 			return -EINVAL;
 		}
@@ -746,15 +752,16 @@ free_work:
 static int mlx5e_ipsec_create_dwork(struct mlx5e_ipsec_sa_entry *sa_entry)
 {
 	struct xfrm_state *x = sa_entry->x;
+	struct xfrm_sub_state *sx = x->sx;
 	struct mlx5e_ipsec_dwork *dwork;
 
 	if (x->xso.type != XFRM_DEV_OFFLOAD_PACKET)
 		return 0;
 
-	if (x->lft.soft_packet_limit == XFRM_INF &&
-	    x->lft.hard_packet_limit == XFRM_INF &&
-	    x->lft.soft_byte_limit == XFRM_INF &&
-	    x->lft.hard_byte_limit == XFRM_INF)
+	if (sx->lft.soft_packet_limit == XFRM_INF &&
+	    sx->lft.hard_packet_limit == XFRM_INF &&
+	    sx->lft.soft_byte_limit == XFRM_INF &&
+	    sx->lft.hard_byte_limit == XFRM_INF)
 		return 0;
 
 	dwork = kzalloc_obj(*dwork);
@@ -1074,6 +1081,7 @@ static void mlx5e_xfrm_advance_esn_state(struct xfrm_state *x)
 
 static void mlx5e_xfrm_update_stats(struct xfrm_state *x)
 {
+	struct xfrm_sub_state *sx = x->sx;
 	struct mlx5e_ipsec_sa_entry *sa_entry = to_ipsec_sa_entry(x);
 	struct mlx5e_ipsec_rule *ipsec_rule = &sa_entry->ipsec_rule;
 	struct net *net = dev_net(x->xso.dev);
@@ -1084,7 +1092,7 @@ static void mlx5e_xfrm_update_stats(struct xfrm_state *x)
 	u64 packets, bytes, lastuse;
 	size_t headers;
 
-	lockdep_assert(lockdep_is_held(&x->lock) ||
+	lockdep_assert(lockdep_is_held(&sx->lock) ||
 		       lockdep_is_held(&net->xfrm.xfrm_cfg_mutex) ||
 		       lockdep_is_held(&net->xfrm.xfrm_state_lock));
 
@@ -1094,7 +1102,7 @@ static void mlx5e_xfrm_update_stats(struct xfrm_state *x)
 	if (sa_entry->attrs.dir == XFRM_DEV_OFFLOAD_IN) {
 		mlx5_fc_query_cached(ipsec_rule->auth.fc, &auth_bytes,
 				     &auth_packets, &lastuse);
-		x->stats.integrity_failed += auth_packets;
+		sx->stats.integrity_failed += auth_packets;
 		XFRM_ADD_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR, auth_packets);
 
 		mlx5_fc_query_cached(ipsec_rule->trailer.fc, &trailer_bytes,
@@ -1108,13 +1116,13 @@ static void mlx5e_xfrm_update_stats(struct xfrm_state *x)
 	if (sa_entry->attrs.dir == XFRM_DEV_OFFLOAD_IN) {
 		mlx5_fc_query_cached(ipsec_rule->replay.fc, &replay_bytes,
 				     &replay_packets, &lastuse);
-		x->stats.replay += replay_packets;
+		sx->stats.replay += replay_packets;
 		XFRM_ADD_STATS(net, LINUX_MIB_XFRMINSTATESEQERROR, replay_packets);
 	}
 
 	mlx5_fc_query_cached(ipsec_rule->fc, &bytes, &packets, &lastuse);
 	success_packets = packets - auth_packets - trailer_packets - replay_packets;
-	x->curlft.packets += success_packets;
+	sx->curlft.packets += success_packets;
 	/* NIC counts all bytes passed through flow steering and doesn't have
 	 * an ability to count payload data size which is needed for SA.
 	 *
@@ -1128,7 +1136,7 @@ static void mlx5e_xfrm_update_stats(struct xfrm_state *x)
 		headers += sizeof(struct ipv6hdr);
 
 	success_bytes = bytes - auth_bytes - trailer_bytes - replay_bytes;
-	x->curlft.bytes += success_bytes - headers * success_packets;
+	sx->curlft.bytes += success_bytes - headers * success_packets;
 }
 
 static __be32 word_to_mask(int prefix)

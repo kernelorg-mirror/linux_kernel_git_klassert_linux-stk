@@ -814,9 +814,10 @@ static inline unsigned int xfrm_user_sec_ctx_size(struct xfrm_sec_ctx *xfrm_ctx)
 
 static void copy_from_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
 {
+	struct xfrm_sub_state *sx = x->sx;
 	memcpy(&x->id, &p->id, sizeof(x->id));
 	memcpy(&x->sel, &p->sel, sizeof(x->sel));
-	memcpy(&x->lft, &p->lft, sizeof(x->lft));
+	memcpy(&sx->lft, &p->lft, sizeof(sx->lft));
 	x->props.mode = p->mode;
 	x->props.replay_window = min_t(unsigned int, p->replay_window,
 					sizeof(x->replay.bitmap) * 8);
@@ -844,12 +845,12 @@ static void xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
 	struct nlattr *rt = attrs[XFRMA_REPLAY_THRESH];
 	struct nlattr *mt = attrs[XFRMA_MTIMER_THRESH];
 
-	if (re && x->replay_esn && x->preplay_esn) {
+	if (re && x->sx->replay_esn && x->sx->preplay_esn) {
 		struct xfrm_replay_state_esn *replay_esn;
 		replay_esn = nla_data(re);
-		memcpy(x->replay_esn, replay_esn,
+		memcpy(x->sx->replay_esn, replay_esn,
 		       xfrm_replay_state_esn_len(replay_esn));
-		memcpy(x->preplay_esn, replay_esn,
+		memcpy(x->sx->preplay_esn, replay_esn,
 		       xfrm_replay_state_esn_len(replay_esn));
 	}
 
@@ -863,17 +864,17 @@ static void xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
 	if (lt) {
 		struct xfrm_lifetime_cur *ltime;
 		ltime = nla_data(lt);
-		x->curlft.bytes = ltime->bytes;
-		x->curlft.packets = ltime->packets;
-		x->curlft.add_time = ltime->add_time;
-		x->curlft.use_time = ltime->use_time;
+		x->sx->curlft.bytes = ltime->bytes;
+		x->sx->curlft.packets = ltime->packets;
+		x->sx->curlft.add_time = ltime->add_time;
+		x->sx->curlft.use_time = ltime->use_time;
 	}
 
 	if (et)
-		x->replay_maxage = nla_get_u32(et);
+		x->sx->replay_maxage = nla_get_u32(et);
 
 	if (rt)
-		x->replay_maxdiff = nla_get_u32(rt);
+		x->sx->replay_maxdiff = nla_get_u32(rt);
 
 	if (mt)
 		x->mapping_maxage = nla_get_u32(mt);
@@ -975,14 +976,14 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 			goto error;
 	}
 
-	if ((err = xfrm_alloc_replay_state_esn(&x->replay_esn, &x->preplay_esn,
+	if ((err = xfrm_alloc_replay_state_esn(&x->sx->replay_esn, &x->sx->preplay_esn,
 					       attrs[XFRMA_REPLAY_ESN_VAL])))
 		goto error;
 
 	x->km.seq = p->seq;
-	x->replay_maxdiff = net->xfrm.sysctl_aevent_rseqth;
+	x->sx->replay_maxdiff = net->xfrm.sysctl_aevent_rseqth;
 	/* sysctl_xfrm_aevent_etime is in 100ms units */
-	x->replay_maxage = (net->xfrm.sysctl_aevent_etime*HZ)/XFRM_AE_ETH_M;
+	x->sx->replay_maxage = (net->xfrm.sysctl_aevent_etime*HZ)/XFRM_AE_ETH_M;
 
 	if ((err = xfrm_init_replay(x, extack)))
 		goto error;
@@ -1134,16 +1135,17 @@ out:
 
 static void copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
 {
+	struct xfrm_sub_state *sx = x->sx;
 	memset(p, 0, sizeof(*p));
 	memcpy(&p->id, &x->id, sizeof(p->id));
 	memcpy(&p->sel, &x->sel, sizeof(p->sel));
-	memcpy(&p->lft, &x->lft, sizeof(p->lft));
+	memcpy(&p->lft, &sx->lft, sizeof(p->lft));
 	if (x->xso.dev)
 		xfrm_dev_state_update_stats(x);
-	memcpy(&p->curlft, &x->curlft, sizeof(p->curlft));
-	put_unaligned(x->stats.replay_window, &p->stats.replay_window);
-	put_unaligned(x->stats.replay, &p->stats.replay);
-	put_unaligned(x->stats.integrity_failed, &p->stats.integrity_failed);
+	memcpy(&p->curlft, &sx->curlft, sizeof(p->curlft));
+	put_unaligned(sx->stats.replay_window, &p->stats.replay_window);
+	put_unaligned(sx->stats.replay, &p->stats.replay);
+	put_unaligned(sx->stats.integrity_failed, &p->stats.integrity_failed);
 	memcpy(&p->saddr, &x->props.saddr, sizeof(p->saddr));
 	p->mode = x->props.mode;
 	p->replay_window = x->props.replay_window;
@@ -1354,8 +1356,8 @@ static int copy_to_user_state_extra(struct xfrm_state *x,
 		if (ret)
 			goto out;
 	}
-	if (x->lastused) {
-		ret = nla_put_u64_64bit(skb, XFRMA_LASTUSED, x->lastused,
+	if (x->sx->lastused) {
+		ret = nla_put_u64_64bit(skb, XFRMA_LASTUSED, x->sx->lastused,
 					XFRMA_PAD);
 		if (ret)
 			goto out;
@@ -1398,10 +1400,10 @@ static int copy_to_user_state_extra(struct xfrm_state *x,
 	if (ret)
 		goto out;
 
-	if (x->replay_esn)
+	if (x->sx->replay_esn)
 		ret = nla_put(skb, XFRMA_REPLAY_ESN_VAL,
-			      xfrm_replay_state_esn_len(x->replay_esn),
-			      x->replay_esn);
+			      xfrm_replay_state_esn_len(x->sx->replay_esn),
+			      x->sx->replay_esn);
 	else
 		ret = nla_put(skb, XFRMA_REPLAY_VAL, sizeof(x->replay),
 			      &x->replay);
@@ -2667,8 +2669,8 @@ static int xfrm_flush_sa(struct sk_buff *skb, struct nlmsghdr *nlh,
 
 static inline unsigned int xfrm_aevent_msgsize(struct xfrm_state *x)
 {
-	unsigned int replay_size = x->replay_esn ?
-			      xfrm_replay_state_esn_len(x->replay_esn) :
+	unsigned int replay_size = x->sx->replay_esn ?
+			      xfrm_replay_state_esn_len(x->sx->replay_esn) :
 			      sizeof(struct xfrm_replay_state);
 
 	return NLMSG_ALIGN(sizeof(struct xfrm_aevent_id))
@@ -2684,6 +2686,7 @@ static inline unsigned int xfrm_aevent_msgsize(struct xfrm_state *x)
 
 static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct km_event *c)
 {
+	struct xfrm_sub_state *sx = x->sx;
 	struct xfrm_aevent_id *id;
 	struct nlmsghdr *nlh;
 	int err;
@@ -2702,29 +2705,29 @@ static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct 
 	id->reqid = x->props.reqid;
 	id->flags = c->data.aevent;
 
-	if (x->replay_esn) {
+	if (sx->replay_esn) {
 		err = nla_put(skb, XFRMA_REPLAY_ESN_VAL,
-			      xfrm_replay_state_esn_len(x->replay_esn),
-			      x->replay_esn);
+			      xfrm_replay_state_esn_len(sx->replay_esn),
+			      sx->replay_esn);
 	} else {
 		err = nla_put(skb, XFRMA_REPLAY_VAL, sizeof(x->replay),
 			      &x->replay);
 	}
 	if (err)
 		goto out_cancel;
-	err = nla_put_64bit(skb, XFRMA_LTIME_VAL, sizeof(x->curlft), &x->curlft,
+	err = nla_put_64bit(skb, XFRMA_LTIME_VAL, sizeof(sx->curlft), &sx->curlft,
 			    XFRMA_PAD);
 	if (err)
 		goto out_cancel;
 
 	if (id->flags & XFRM_AE_RTHR) {
-		err = nla_put_u32(skb, XFRMA_REPLAY_THRESH, x->replay_maxdiff);
+		err = nla_put_u32(skb, XFRMA_REPLAY_THRESH, sx->replay_maxdiff);
 		if (err)
 			goto out_cancel;
 	}
 	if (id->flags & XFRM_AE_ETHR) {
 		err = nla_put_u32(skb, XFRMA_ETIMER_THRESH,
-				  x->replay_maxage * 10 / HZ);
+				  sx->replay_maxage * 10 / HZ);
 		if (err)
 			goto out_cancel;
 	}
@@ -2785,21 +2788,21 @@ static int xfrm_get_ae(struct sk_buff *skb, struct nlmsghdr *nlh,
 	 * gets lock (the concern is things getting updated
 	 * while we are still reading) - jhs
 	*/
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 	c.data.aevent = p->flags;
 	c.seq = nlh->nlmsg_seq;
 	c.portid = nlh->nlmsg_pid;
 
 	err = build_aevent(r_skb, x, &c);
 	if (err < 0) {
-		spin_unlock_bh(&x->lock);
+		spin_unlock_bh(&x->sx->lock);
 		xfrm_state_put(x);
 		kfree_skb(r_skb);
 		return err;
 	}
 
 	err = nlmsg_unicast(xfrm_net_nlsk(net, skb), r_skb, NETLINK_CB(skb).portid);
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 	xfrm_state_put(x);
 	return err;
 }
@@ -2842,13 +2845,13 @@ static int xfrm_new_ae(struct sk_buff *skb, struct nlmsghdr *nlh,
 		goto out;
 	}
 
-	err = xfrm_replay_verify_len(x->replay_esn, re, extack);
+	err = xfrm_replay_verify_len(x->sx->replay_esn, re, extack);
 	if (err)
 		goto out;
 
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 	xfrm_update_ae_params(x, attrs, 1);
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 
 	c.event = nlh->nlmsg_type;
 	c.seq = nlh->nlmsg_seq;
@@ -2975,7 +2978,7 @@ static int xfrm_add_sa_expire(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (x == NULL)
 		return err;
 
-	spin_lock_bh(&x->lock);
+	spin_lock_bh(&x->sx->lock);
 	err = -EINVAL;
 	if (x->km.state != XFRM_STATE_VALID) {
 		NL_SET_ERR_MSG(extack, "SA must be in VALID state");
@@ -2990,7 +2993,7 @@ static int xfrm_add_sa_expire(struct sk_buff *skb, struct nlmsghdr *nlh,
 	}
 	err = 0;
 out:
-	spin_unlock_bh(&x->lock);
+	spin_unlock_bh(&x->sx->lock);
 	xfrm_state_put(x);
 	return err;
 }
@@ -3673,8 +3676,8 @@ static inline unsigned int xfrm_sa_len(struct xfrm_state *x)
 		l += nla_total_size(sizeof(*x->encap));
 	if (x->tfcpad)
 		l += nla_total_size(sizeof(x->tfcpad));
-	if (x->replay_esn)
-		l += nla_total_size(xfrm_replay_state_esn_len(x->replay_esn));
+	if (x->sx->replay_esn)
+		l += nla_total_size(xfrm_replay_state_esn_len(x->sx->replay_esn));
 	else
 		l += nla_total_size(sizeof(struct xfrm_replay_state));
 	if (x->security)
@@ -3695,7 +3698,7 @@ static inline unsigned int xfrm_sa_len(struct xfrm_state *x)
 	if (x->pcpu_num != UINT_MAX)
 		l += nla_total_size(sizeof(x->pcpu_num));
 
-	/* Must count x->lastused as it may become non-zero behind our back. */
+	/* Must count x->sx->lastused as it may become non-zero behind our back. */
 	l += nla_total_size_64bit(sizeof(u64));
 
 	if (x->mapping_maxage)
