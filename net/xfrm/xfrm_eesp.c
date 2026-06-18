@@ -564,6 +564,7 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 	/* EESP base header */
 	eesph->one = 1;
 	eesph->version = 0;
+	eesph->reserved = 0;
 	eesph->optlen = 0;
 	eesph->session_id = 0;
 	eesph->spi = x->id.spi;
