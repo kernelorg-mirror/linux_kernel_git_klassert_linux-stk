@@ -634,12 +634,12 @@ static inline int eesp_remove_trailer(struct sk_buff *skb)
 			const struct iphdr *iph = (void *)ipv;
 
 			nexthdr = IPPROTO_IPIP;
-			padlen = elen - ntohs(iph->tot_len);
+			padlen = elen - alen - ntohs(iph->tot_len);
 		} else if (version == 6) {
 			const struct ipv6hdr *ip6h = (void *)ipv;
 
 			nexthdr = IPPROTO_IPV6;
-			padlen = elen - ntohs(ip6h->payload_len) - sizeof(*ip6h);
+			padlen = elen - alen - ntohs(ip6h->payload_len) - sizeof(*ip6h);
 		} else {
 			goto out;
 		}
