@@ -633,19 +633,13 @@ static inline int eesp_remove_trailer(struct sk_buff *skb)
 		if (version == 4) {
 			const struct iphdr *iph = (void *)ipv;
 
-			nexthdr = iph->protocol;
+			nexthdr = IPPROTO_IPIP;
 			padlen = elen - ntohs(iph->tot_len);
 		} else if (version == 6) {
 			const struct ipv6hdr *ip6h = (void *)ipv;
-			int offset = skb_network_offset(skb) + sizeof(*ip6h);
-			__be16 frag_off;
 
-			nexthdr = ip6h->nexthdr;
+			nexthdr = IPPROTO_IPV6;
 			padlen = elen - ntohs(ip6h->payload_len) - sizeof(*ip6h);
-
-			offset = ipv6_skip_exthdr(skb, offset, &nexthdr, &frag_off);
-			if (offset == -1)
-				goto out;
 		} else {
 			goto out;
 		}
@@ -702,8 +696,10 @@ int eesp_input_done2(struct sk_buff *skb, int err)
 {
 	struct xfrm_state *x = xfrm_input_state(skb);
 	struct xfrm_offload *xo = xfrm_offload(skb);
-	/* FIXME:  IV size fixed to 8 bytes in ip_eesp_peer_hdr! */
-	int hlen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr) + sizeof(struct ip_eesp_pyld_hdr);
+	/* Tunnel mode uses optimized format: no payload info header.
+	 * Transport/BEET mode uses full format with payload info header. */
+	int hlen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr) +
+		   (x->props.mode == XFRM_MODE_TUNNEL ? 0 : sizeof(struct ip_eesp_pyld_hdr));
 	int hdr_len = skb_network_header_len(skb);
 	int nexthdr;
 
