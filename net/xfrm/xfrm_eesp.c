@@ -483,7 +483,7 @@ int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info
 	}
 
 	aead_request_set_callback(req, 0, eesp_output_done_esn, skb);
-	aead_request_set_crypt(req, sg, dsg, eesp->clen, iv);
+	aead_request_set_crypt(req, sg, dsg, ivlen + eesp->clen, iv);
 	aead_request_set_ad(req, assoclen);
 
 	memset(iv, 0, ivlen);
