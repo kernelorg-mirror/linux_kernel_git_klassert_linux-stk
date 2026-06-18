@@ -14,6 +14,7 @@
 #include <crypto/aead.h>
 #include <net/ip.h>
 #include <net/eesp.h>
+#include <net/ip6_checksum.h>
 #include <net/ip6_route.h>
 #include <linux/icmpv6.h>
 #include <net/espintcp.h>
