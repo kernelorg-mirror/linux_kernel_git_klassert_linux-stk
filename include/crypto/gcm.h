@@ -56,6 +56,7 @@ static inline int crypto_ipsec_check_assoclen(unsigned int assoclen)
 	switch (assoclen) {
 	case 16:
 	case 20:
+	case 24:	/* eesp: seqiv adds 8 to eesp_hdr(8)+peer_hdr-iv(8) */
 		break;
 	default:
 		return -EINVAL;
