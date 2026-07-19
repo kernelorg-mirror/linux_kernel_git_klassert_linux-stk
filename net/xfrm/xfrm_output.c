@@ -492,7 +492,7 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct xfrm_state *x = dst->xfrm;
-	struct xfrm_sub_state *sx = x->sx;
+	struct xfrm_sub_state *sx = &x->sx[0];
 	struct net *net = xs_net(x);
 
 	if (err <= 0 || x->xso.type == XFRM_DEV_OFFLOAD_PACKET)

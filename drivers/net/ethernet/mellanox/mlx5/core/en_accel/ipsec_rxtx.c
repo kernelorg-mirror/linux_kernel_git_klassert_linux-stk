@@ -153,7 +153,7 @@ static void mlx5e_ipsec_set_swp(struct sk_buff *skb,
 void mlx5e_ipsec_set_iv_esn(struct sk_buff *skb, struct xfrm_state *x,
 			    struct xfrm_offload *xo)
 {
-	struct xfrm_replay_state_esn *replay_esn = x->sx->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = x->sx[0].replay_esn;
 	__u32 oseq = replay_esn->oseq;
 	int iv_offset;
 	__be64 seqno;

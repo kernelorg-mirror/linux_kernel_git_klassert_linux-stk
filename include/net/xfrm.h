@@ -362,7 +362,7 @@ struct xfrm_state {
 
 	/* --- cacheline 8 boundary (512 bytes) --- */
 	/* Sub SA data */
-	struct xfrm_sub_state *sx;
+	struct xfrm_sub_state sx[XFRM_MAX_SUB_STATES];
 
 };
 
@@ -2067,17 +2067,24 @@ static inline unsigned int xfrm_replay_state_esn_len(struct xfrm_replay_state_es
 static inline int xfrm_replay_clone(struct xfrm_state *x,
 				     struct xfrm_state *orig)
 {
+	int i;
 
-	x->sx->replay_esn = kmemdup(orig->sx->replay_esn,
-				xfrm_replay_state_esn_len(orig->sx->replay_esn),
-				GFP_KERNEL);
-	if (!x->sx->replay_esn)
-		return -ENOMEM;
-	x->sx->preplay_esn = kmemdup(orig->sx->preplay_esn,
-				 xfrm_replay_state_esn_len(orig->sx->preplay_esn),
-				 GFP_KERNEL);
-	if (!x->sx->preplay_esn)
-		return -ENOMEM;
+	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+		if (!orig->sx[i].replay_esn)
+			continue;
+		x->sx[i].replay_esn = kmemdup(orig->sx[i].replay_esn,
+					 xfrm_replay_state_esn_len(orig->sx[i].replay_esn),
+					 GFP_KERNEL);
+		if (!x->sx[i].replay_esn)
+			return -ENOMEM;
+		if (!orig->sx[i].preplay_esn)
+			continue;
+		x->sx[i].preplay_esn = kmemdup(orig->sx[i].preplay_esn,
+					  xfrm_replay_state_esn_len(orig->sx[i].preplay_esn),
+					  GFP_KERNEL);
+		if (!x->sx[i].preplay_esn)
+			return -ENOMEM;
+	}
 
 	return 0;
 }

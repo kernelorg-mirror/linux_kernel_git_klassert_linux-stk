@@ -62,7 +62,7 @@ static void mlx5e_ipsec_handle_sw_limits(struct work_struct *_work)
 		container_of(_work, struct mlx5e_ipsec_dwork, dwork.work);
 	struct mlx5e_ipsec_sa_entry *sa_entry = dwork->sa_entry;
 	struct xfrm_state *x = sa_entry->x;
-	struct xfrm_sub_state *sx = x->sx;
+	struct xfrm_sub_state *sx = &x->sx[0];
 
 	if (sa_entry->attrs.drop)
 		return;
@@ -91,7 +91,7 @@ static void mlx5e_ipsec_handle_sw_limits(struct work_struct *_work)
 static bool mlx5e_ipsec_update_esn_state(struct mlx5e_ipsec_sa_entry *sa_entry)
 {
 	struct xfrm_state *x = sa_entry->x;
-	struct xfrm_sub_state *sx = x->sx;
+	struct xfrm_sub_state *sx = &x->sx[0];
 	u32 seq_bottom = 0;
 	u32 esn, esn_msb;
 	u8 overlap;
@@ -148,7 +148,7 @@ static void mlx5e_ipsec_init_limits(struct mlx5e_ipsec_sa_entry *sa_entry,
 				    struct mlx5_accel_esp_xfrm_attrs *attrs)
 {
 	struct xfrm_state *x = sa_entry->x;
-	struct xfrm_sub_state *sx = x->sx;
+	struct xfrm_sub_state *sx = &x->sx[0];
 	s64 start_value, n;
 
 	attrs->lft.hard_packet_limit = sx->lft.hard_packet_limit;
@@ -395,7 +395,7 @@ void mlx5e_ipsec_build_accel_xfrm_attrs(struct mlx5e_ipsec_sa_entry *sa_entry,
 					struct mlx5_accel_esp_xfrm_attrs *attrs)
 {
 	struct xfrm_state *x = sa_entry->x;
-	struct xfrm_sub_state *sx = x->sx;
+	struct xfrm_sub_state *sx = &x->sx[0];
 	struct aes_gcm_keymat *aes_gcm = &attrs->aes_gcm;
 	struct aead_geniv_ctx *geniv_ctx;
 	struct crypto_aead *aead;
@@ -492,7 +492,7 @@ static int mlx5e_xfrm_validate_state(struct mlx5_core_dev *mdev,
 				     struct xfrm_state *x,
 				     struct netlink_ext_ack *extack)
 {
-	struct xfrm_sub_state *sx = x->sx;
+	struct xfrm_sub_state *sx = &x->sx[0];
 
 	if (x->props.aalgo != SADB_AALG_NONE) {
 		NL_SET_ERR_MSG_MOD(extack, "Cannot offload authenticated xfrm states");
@@ -752,7 +752,7 @@ free_work:
 static int mlx5e_ipsec_create_dwork(struct mlx5e_ipsec_sa_entry *sa_entry)
 {
 	struct xfrm_state *x = sa_entry->x;
-	struct xfrm_sub_state *sx = x->sx;
+	struct xfrm_sub_state *sx = &x->sx[0];
 	struct mlx5e_ipsec_dwork *dwork;
 
 	if (x->xso.type != XFRM_DEV_OFFLOAD_PACKET)
@@ -1081,7 +1081,7 @@ static void mlx5e_xfrm_advance_esn_state(struct xfrm_state *x)
 
 static void mlx5e_xfrm_update_stats(struct xfrm_state *x)
 {
-	struct xfrm_sub_state *sx = x->sx;
+	struct xfrm_sub_state *sx = &x->sx[0];
 	struct mlx5e_ipsec_sa_entry *sa_entry = to_ipsec_sa_entry(x);
 	struct mlx5e_ipsec_rule *ipsec_rule = &sa_entry->ipsec_rule;
 	struct net *net = dev_net(x->xso.dev);

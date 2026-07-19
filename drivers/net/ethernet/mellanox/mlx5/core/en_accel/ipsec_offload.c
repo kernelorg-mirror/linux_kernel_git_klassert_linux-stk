@@ -365,7 +365,7 @@ static void mlx5e_ipsec_handle_limits(struct mlx5e_ipsec_sa_entry *sa_entry)
 	bool soft_arm, hard_arm;
 	u64 hard_cnt;
 
-	lockdep_assert_held(&sa_entry->x->sx->lock);
+	lockdep_assert_held(&sa_entry->x->sx[0].lock);
 
 	soft_arm = !MLX5_GET(ipsec_aso, sa_entry->ctx, soft_lft_arm);
 	hard_arm = !MLX5_GET(ipsec_aso, sa_entry->ctx, hard_lft_arm);
@@ -450,7 +450,7 @@ static void mlx5e_ipsec_handle_event(struct work_struct *_work)
 
 	attrs = &sa_entry->attrs;
 
-	spin_lock_bh(&sa_entry->x->sx->lock);
+	spin_lock_bh(&sa_entry->x->sx[0].lock);
 	ret = mlx5e_ipsec_aso_query(sa_entry, NULL);
 	if (ret)
 		goto unlock;
@@ -468,7 +468,7 @@ static void mlx5e_ipsec_handle_event(struct work_struct *_work)
 	}
 
 unlock:
-	spin_unlock_bh(&sa_entry->x->sx->lock);
+	spin_unlock_bh(&sa_entry->x->sx[0].lock);
 	if (need_modify)
 		mlx5_accel_esp_modify_xfrm(sa_entry, &tmp);
 	kfree(work);
@@ -597,7 +597,7 @@ int mlx5e_ipsec_aso_query(struct mlx5e_ipsec_sa_entry *sa_entry,
 	u8 ds_cnt;
 	int ret;
 
-	lockdep_assert_held(&sa_entry->x->sx->lock);
+	lockdep_assert_held(&sa_entry->x->sx[0].lock);
 	res = &mdev->mlx5e_res.hw_objs;
 
 	spin_lock_bh(&aso->lock);

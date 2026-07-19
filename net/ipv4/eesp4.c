@@ -14,10 +14,10 @@ static struct sock *eesp_find_tcp_sk(struct xfrm_state *x)
 	__be16 sport, dport;
 	struct sock *sk;
 
-	spin_lock_bh(&x->sx->lock);
+	spin_lock_bh(&x->sx[0].lock);
 	sport = encap->encap_sport;
 	dport = encap->encap_dport;
-	spin_unlock_bh(&x->sx->lock);
+	spin_unlock_bh(&x->sx[0].lock);
 
 	sk = inet_lookup_established(net, x->id.daddr.a4, dport,
 				     x->props.saddr.a4, sport, 0);

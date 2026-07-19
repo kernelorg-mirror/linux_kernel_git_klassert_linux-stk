@@ -514,7 +514,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 		if (encap_type == -1) {
 			async = 1;
 			seq = XFRM_SKB_CB(skb)->seq.input.low;
-			spin_lock(&x->sx->lock);
+			spin_lock(&x->sx[0].lock);
 			goto resume;
 		}
 		/* GRO call */
@@ -533,7 +533,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 
 					xfrm_audit_state_icvfail(x, skb,
 								 x->type->proto);
-					x->sx->stats.integrity_failed++;
+					x->sx[0].stats.integrity_failed++;
 					XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR);
 					goto drop;
 				}
@@ -629,7 +629,7 @@ process:
 		XFRM_SKB_CB(skb)->seq.input.low = seq;
 		XFRM_SKB_CB(skb)->seq.input.hi = seq_hi;
 
-		spin_lock(&x->sx->lock);
+		spin_lock(&x->sx[0].lock);
 
 		if (unlikely(x->km.state != XFRM_STATE_VALID)) {
 			if (x->km.state == XFRM_STATE_ACQ)
@@ -664,7 +664,7 @@ process:
 		}
 
 		if (!crypto_done) {
-			spin_unlock(&x->sx->lock);
+			spin_unlock(&x->sx[0].lock);
 			dev_hold(skb->dev);
 
 			nexthdr = x->type->input(x, skb);
@@ -675,14 +675,14 @@ process:
 			}
 
 			dev_put(skb->dev);
-			spin_lock(&x->sx->lock);
+			spin_lock(&x->sx[0].lock);
 		}
 resume:
 		if (nexthdr < 0) {
 			if (nexthdr == -EBADMSG) {
 				xfrm_audit_state_icvfail(x, skb,
 							 x->type->proto);
-				x->sx->stats.integrity_failed++;
+				x->sx[0].stats.integrity_failed++;
 			}
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEPROTOERROR);
 			goto drop_unlock;
@@ -698,11 +698,11 @@ resume:
 
 		xfrm_replay_advance(x, seq);
 
-		x->sx->curlft.bytes += skb->len;
-		x->sx->curlft.packets++;
-		x->sx->lastused = ktime_get_real_seconds();
+		x->sx[0].curlft.bytes += skb->len;
+		x->sx[0].curlft.packets++;
+		x->sx[0].lastused = ktime_get_real_seconds();
 
-		spin_unlock(&x->sx->lock);
+		spin_unlock(&x->sx[0].lock);
 
 		XFRM_MODE_SKB_CB(skb)->protocol = nexthdr;
 
@@ -780,7 +780,7 @@ resume_decapped:
 	}
 
 drop_unlock:
-	spin_unlock(&x->sx->lock);
+	spin_unlock(&x->sx[0].lock);
 drop:
 	if (async)
 		dev_put(skb->dev);
