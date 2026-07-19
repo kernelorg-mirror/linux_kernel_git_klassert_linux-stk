@@ -362,7 +362,7 @@ struct xfrm_state {
 
 	/* --- cacheline 8 boundary (512 bytes) --- */
 	/* Sub SA data */
-	struct xfrm_sub_state sx[XFRM_MAX_SUB_STATES];
+	struct xfrm_sub_state *sx;
 
 };
 

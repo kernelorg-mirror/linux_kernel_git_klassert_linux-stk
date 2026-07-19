@@ -620,6 +620,7 @@ static void xfrm_state_gc_destroy(struct xfrm_state *x)
 		kfree(x->sx[i].replay_esn);
 		kfree(x->sx[i].preplay_esn);
 	}
+	kfree(x->sx);
 	xfrm_unset_type_offload(x);
 	xfrm_state_delete_tunnel(x);
 	if (x->type) {
@@ -747,19 +748,20 @@ static int xfrm_sub_state_alloc(struct xfrm_state *x)
 	struct xfrm_sub_state *sx;
 	int i;
 
-	BUILD_BUG_ON(XFRM_MAX_SUB_STATES < 1);
+	sx = kcalloc(XFRM_MAX_SUB_STATES, sizeof(*sx), GFP_ATOMIC);
+	if (!sx)
+		return -ENOMEM;
 
 	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
-		sx = &x->sx[i];
-		sx->curlft.add_time = ktime_get_real_seconds();
-		sx->lft.soft_byte_limit = XFRM_INF;
-		sx->lft.soft_packet_limit = XFRM_INF;
-		sx->lft.hard_byte_limit = XFRM_INF;
-		sx->lft.hard_packet_limit = XFRM_INF;
-		sx->replay_maxage = 0;
-		sx->replay_maxdiff = 0;
-		spin_lock_init(&sx->lock);
+		sx[i].curlft.add_time = ktime_get_real_seconds();
+		sx[i].lft.soft_byte_limit = XFRM_INF;
+		sx[i].lft.soft_packet_limit = XFRM_INF;
+		sx[i].lft.hard_byte_limit = XFRM_INF;
+		sx[i].lft.hard_packet_limit = XFRM_INF;
+		spin_lock_init(&sx[i].lock);
 	}
+
+	x->sx = sx;
 
 	return 0;
 }
