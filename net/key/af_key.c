@@ -1083,6 +1083,7 @@ static struct xfrm_state * pfkey_msg2xfrm_state(struct net *net,
 	const struct sadb_x_sec_ctx *sec_ctx;
 	uint16_t proto;
 	int err;
+	int i;
 
 
 	sa = ext_hdrs[SADB_EXT_SA - 1];
@@ -1152,17 +1153,21 @@ static struct xfrm_state * pfkey_msg2xfrm_state(struct net *net,
 
 	lifetime = ext_hdrs[SADB_EXT_LIFETIME_HARD - 1];
 	if (lifetime != NULL) {
-		x->sx[0].lft.hard_packet_limit = _KEY2X(lifetime->sadb_lifetime_allocations);
-		x->sx[0].lft.hard_byte_limit = _KEY2X(lifetime->sadb_lifetime_bytes);
-		x->sx[0].lft.hard_add_expires_seconds = lifetime->sadb_lifetime_addtime;
-		x->sx[0].lft.hard_use_expires_seconds = lifetime->sadb_lifetime_usetime;
+		for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+			x->sx[i].lft.hard_packet_limit = _KEY2X(lifetime->sadb_lifetime_allocations);
+			x->sx[i].lft.hard_byte_limit = _KEY2X(lifetime->sadb_lifetime_bytes);
+			x->sx[i].lft.hard_add_expires_seconds = lifetime->sadb_lifetime_addtime;
+			x->sx[i].lft.hard_use_expires_seconds = lifetime->sadb_lifetime_usetime;
+		}
 	}
 	lifetime = ext_hdrs[SADB_EXT_LIFETIME_SOFT - 1];
 	if (lifetime != NULL) {
-		x->sx[0].lft.soft_packet_limit = _KEY2X(lifetime->sadb_lifetime_allocations);
-		x->sx[0].lft.soft_byte_limit = _KEY2X(lifetime->sadb_lifetime_bytes);
-		x->sx[0].lft.soft_add_expires_seconds = lifetime->sadb_lifetime_addtime;
-		x->sx[0].lft.soft_use_expires_seconds = lifetime->sadb_lifetime_usetime;
+		for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+			x->sx[i].lft.soft_packet_limit = _KEY2X(lifetime->sadb_lifetime_allocations);
+			x->sx[i].lft.soft_byte_limit = _KEY2X(lifetime->sadb_lifetime_bytes);
+			x->sx[i].lft.soft_add_expires_seconds = lifetime->sadb_lifetime_addtime;
+			x->sx[i].lft.soft_use_expires_seconds = lifetime->sadb_lifetime_usetime;
+		}
 	}
 
 	sec_ctx = ext_hdrs[SADB_X_EXT_SEC_CTX - 1];

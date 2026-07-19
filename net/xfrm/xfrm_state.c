@@ -1394,6 +1394,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
 	struct xfrm_hash_state_ptrs state_ptrs;
 	struct net *net = xp_net(pol);
 	unsigned int h, h_wildcard;
+	int i;
 	struct xfrm_state *x, *x0, *to_put;
 	int acquire_in_progress = 0;
 	int error = 0;
@@ -1621,7 +1622,8 @@ found:
 						  xfrm_state_deref_prot(net->xfrm.state_byseq, net) + h,
 						  x->xso.type);
 			}
-			x->sx[0].lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
+			for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
+				x->sx[i].lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
 			hrtimer_start(&x->mtimer,
 				      ktime_set(net->xfrm.sysctl_acq_expires, 0),
 				      HRTIMER_MODE_REL_SOFT);
@@ -1847,6 +1849,7 @@ static struct xfrm_state *__find_acq_core(struct net *net,
 {
 	unsigned int h = xfrm_dst_hash(net, daddr, saddr, reqid, family);
 	struct xfrm_state *x;
+	int i;
 	u32 mark = m->v & m->m;
 
 	hlist_for_each_entry(x, xfrm_state_deref_prot(net->xfrm.state_bydst, net) + h, bydst) {
@@ -1900,7 +1903,8 @@ static struct xfrm_state *__find_acq_core(struct net *net,
 		x->if_id = if_id;
 		x->mark.v = m->v;
 		x->mark.m = m->m;
-		x->sx[0].lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
+		for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
+			x->sx[i].lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
 		xfrm_state_hold(x);
 		hrtimer_start(&x->mtimer,
 			      ktime_set(net->xfrm.sysctl_acq_expires, 0),
@@ -2225,6 +2229,7 @@ int xfrm_state_update(struct xfrm_state *x)
 	struct xfrm_sub_state *sx = &x->sx[0];
 	struct xfrm_state *x1, *to_put;
 	int err;
+	int i;
 	int use_spi = xfrm_id_proto_match(x->id.proto, IPSEC_PROTO_ANY);
 	struct net *net = xs_net(x);
 
@@ -2288,7 +2293,8 @@ out:
 		}
 		if (!use_spi && memcmp(&x1->sel, &x->sel, sizeof(x1->sel)))
 			memcpy(&x1->sel, &x->sel, sizeof(x1->sel));
-		memcpy(&x1->sx[0].lft, &sx->lft, sizeof(x1->sx[0].lft));
+		for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
+			memcpy(&x1->sx[i].lft, &sx->lft, sizeof(x1->sx[i].lft));
 		x1->km.dying = 0;
 
 		hrtimer_start(&x1->mtimer, ktime_set(1, 0),

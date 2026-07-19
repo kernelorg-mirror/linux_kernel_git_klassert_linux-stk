@@ -814,10 +814,12 @@ static inline unsigned int xfrm_user_sec_ctx_size(struct xfrm_sec_ctx *xfrm_ctx)
 
 static void copy_from_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
 {
-	struct xfrm_sub_state *sx = &x->sx[0];
+	int i;
+
 	memcpy(&x->id, &p->id, sizeof(x->id));
 	memcpy(&x->sel, &p->sel, sizeof(x->sel));
-	memcpy(&sx->lft, &p->lft, sizeof(sx->lft));
+	for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
+		memcpy(&x->sx[i].lft, &p->lft, sizeof(x->sx[i].lft));
 	x->props.mode = p->mode;
 	x->props.replay_window = min_t(unsigned int, p->replay_window,
 					sizeof(x->replay.bitmap) * 8);
@@ -838,43 +840,56 @@ static void copy_from_user_state(struct xfrm_state *x, struct xfrm_usersa_info *
 static void xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
 				  int update_esn)
 {
+	struct xfrm_replay_state_esn *replay_esn;
+	struct xfrm_lifetime_cur *ltime;
+	struct xfrm_replay_state *replay;
 	struct nlattr *rp = attrs[XFRMA_REPLAY_VAL];
 	struct nlattr *re = update_esn ? attrs[XFRMA_REPLAY_ESN_VAL] : NULL;
 	struct nlattr *lt = attrs[XFRMA_LTIME_VAL];
 	struct nlattr *et = attrs[XFRMA_ETIMER_THRESH];
 	struct nlattr *rt = attrs[XFRMA_REPLAY_THRESH];
 	struct nlattr *mt = attrs[XFRMA_MTIMER_THRESH];
+	int i;
 
-	if (re && x->sx[0].replay_esn && x->sx[0].preplay_esn) {
-		struct xfrm_replay_state_esn *replay_esn;
+	if (re) {
 		replay_esn = nla_data(re);
-		memcpy(x->sx[0].replay_esn, replay_esn,
-		       xfrm_replay_state_esn_len(replay_esn));
-		memcpy(x->sx[0].preplay_esn, replay_esn,
-		       xfrm_replay_state_esn_len(replay_esn));
+		for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+			if (!x->sx[i].replay_esn || !x->sx[i].preplay_esn)
+				continue;
+			memcpy(x->sx[i].replay_esn, replay_esn,
+			       xfrm_replay_state_esn_len(replay_esn));
+			memcpy(x->sx[i].preplay_esn, replay_esn,
+			       xfrm_replay_state_esn_len(replay_esn));
+		}
 	}
 
 	if (rp) {
-		struct xfrm_replay_state *replay;
 		replay = nla_data(rp);
 		memcpy(&x->replay, replay, sizeof(*replay));
 		memcpy(&x->preplay, replay, sizeof(*replay));
 	}
 
 	if (lt) {
-		struct xfrm_lifetime_cur *ltime;
 		ltime = nla_data(lt);
-		x->sx[0].curlft.bytes = ltime->bytes;
-		x->sx[0].curlft.packets = ltime->packets;
-		x->sx[0].curlft.add_time = ltime->add_time;
-		x->sx[0].curlft.use_time = ltime->use_time;
+		for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+			x->sx[i].curlft.bytes = ltime->bytes;
+			x->sx[i].curlft.packets = ltime->packets;
+			x->sx[i].curlft.add_time = ltime->add_time;
+			x->sx[i].curlft.use_time = ltime->use_time;
+		}
 	}
 
-	if (et)
-		x->sx[0].replay_maxage = nla_get_u32(et);
+	if (et) {
+		u32 val = nla_get_u32(et);
+		for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
+			x->sx[i].replay_maxage = val;
+	}
 
-	if (rt)
-		x->sx[0].replay_maxdiff = nla_get_u32(rt);
+	if (rt) {
+		u32 val = nla_get_u32(rt);
+		for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
+			x->sx[i].replay_maxdiff = val;
+	}
 
 	if (mt)
 		x->mapping_maxage = nla_get_u32(mt);
@@ -899,6 +914,7 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 {
 	struct xfrm_state *x = xfrm_state_alloc(net);
 	int err = -ENOMEM;
+	int i;
 
 	if (!x)
 		goto error_no_put;
@@ -976,14 +992,21 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 			goto error;
 	}
 
-	if ((err = xfrm_alloc_replay_state_esn(&x->sx[0].replay_esn, &x->sx[0].preplay_esn,
-					       attrs[XFRMA_REPLAY_ESN_VAL])))
-		goto error;
+	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+		err = xfrm_alloc_replay_state_esn(&x->sx[i].replay_esn,
+				       &x->sx[i].preplay_esn,
+				       attrs[XFRMA_REPLAY_ESN_VAL]);
+		if (err)
+			goto error;
+	}
 
 	x->km.seq = p->seq;
-	x->sx[0].replay_maxdiff = net->xfrm.sysctl_aevent_rseqth;
-	/* sysctl_xfrm_aevent_etime is in 100ms units */
-	x->sx[0].replay_maxage = (net->xfrm.sysctl_aevent_etime*HZ)/XFRM_AE_ETH_M;
+	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+		x->sx[i].replay_maxdiff = net->xfrm.sysctl_aevent_rseqth;
+		/* sysctl_xfrm_aevent_etime is in 100ms units */
+		x->sx[i].replay_maxage =
+			(net->xfrm.sysctl_aevent_etime * HZ) / XFRM_AE_ETH_M;
+	}
 
 	if ((err = xfrm_init_replay(x, extack)))
 		goto error;
