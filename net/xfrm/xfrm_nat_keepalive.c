@@ -159,6 +159,7 @@ struct nat_keepalive_work_ctx {
 
 static int nat_keepalive_work_single(struct xfrm_state *x, int count, void *ptr)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	struct nat_keepalive_work_ctx *ctx = ptr;
 	bool send_keepalive = false;
 	struct nat_keepalive ka;
@@ -170,9 +171,9 @@ static int nat_keepalive_work_single(struct xfrm_state *x, int count, void *ptr)
 	if (!interval)
 		return 0;
 
-	spin_lock(&x->sx[0].lock);
+	spin_lock(&sx[0].lock);
 
-	delta = (int)(ctx->now - x->sx[0].lastused);
+	delta = (int)(ctx->now - sx[0].lastused);
 	if (delta < interval) {
 		x->nat_keepalive_expiration = ctx->now + interval - delta;
 		next_run = x->nat_keepalive_expiration;
@@ -184,7 +185,7 @@ static int nat_keepalive_work_single(struct xfrm_state *x, int count, void *ptr)
 		send_keepalive = true;
 	}
 
-	spin_unlock(&x->sx[0].lock);
+	spin_unlock(&sx[0].lock);
 
 	if (send_keepalive)
 		nat_keepalive_send(&ka);

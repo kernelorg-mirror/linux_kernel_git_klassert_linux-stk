@@ -335,6 +335,8 @@ struct xfrm_state {
 	/* Replay detection notification timer */
 	struct timer_list	rtimer;
 
+	struct xfrm_subsa_info	subsa;
+
 	/* Legacy and non IPsec stuff goes here. */
 
 	/* State for replay detection */
@@ -362,8 +364,10 @@ struct xfrm_state {
 
 	/* --- cacheline 8 boundary (512 bytes) --- */
 	/* Sub SA data */
-	struct xfrm_sub_state *sx;
-
+	union {
+		struct xfrm_sub_state *sx;
+		struct xfrm_sub_state __percpu *psx;
+	};
 };
 
 static inline struct net *xs_net(struct xfrm_state *x)
@@ -1734,6 +1738,8 @@ void xfrm_state_walk_init(struct xfrm_state_walk *walk, u8 proto,
 int xfrm_state_walk(struct net *net, struct xfrm_state_walk *walk,
 		    int (*func)(struct xfrm_state *, int, void*), void *);
 void xfrm_state_walk_done(struct xfrm_state_walk *walk, struct net *net);
+struct xfrm_sub_state *xfrm_sub_state_get(struct xfrm_state *x, __u8 proto);
+int xfrm_sub_state_alloc(struct xfrm_state *x, __u8 proto);
 struct xfrm_state *xfrm_state_alloc(struct net *net);
 void xfrm_state_free(struct xfrm_state *x);
 struct xfrm_state *xfrm_state_find(const xfrm_address_t *daddr,
@@ -1822,7 +1828,7 @@ int xfrm_dev_policy_flush(struct net *net, struct net_device *dev,
 			  bool task_valid);
 void xfrm_sad_getinfo(struct net *net, struct xfrmk_sadinfo *si);
 void xfrm_spd_getinfo(struct net *net, struct xfrmk_spdinfo *si);
-u32 xfrm_replay_seqhi(struct xfrm_state *x, __be32 net_seq);
+u32 xfrm_replay_seqhi(struct xfrm_sub_state *sx, __be32 net_seq);
 int xfrm_init_replay(struct xfrm_state *x, struct netlink_ext_ack *extack);
 u32 xfrm_state_mtu(struct xfrm_state *x, int mtu);
 int __xfrm_init_state(struct xfrm_state *x, struct netlink_ext_ack *extack);
@@ -2009,11 +2015,15 @@ static inline int xfrm_policy_id2dir(u32 index)
 }
 
 #ifdef CONFIG_XFRM
-void xfrm_replay_advance(struct xfrm_state *x, __be32 net_seq);
-int xfrm_replay_check(struct xfrm_state *x, struct sk_buff *skb, __be32 net_seq);
+void xfrm_replay_advance(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			 __be32 net_seq);
+int xfrm_replay_check(struct xfrm_state *x, struct xfrm_sub_state *sx,
+		      struct sk_buff *skb, __be32 net_seq);
 void xfrm_replay_notify(struct xfrm_state *x, int event);
-int xfrm_replay_overflow(struct xfrm_state *x, struct sk_buff *skb);
-int xfrm_replay_recheck(struct xfrm_state *x, struct sk_buff *skb, __be32 net_seq);
+int xfrm_replay_overflow(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			 struct sk_buff *skb);
+int xfrm_replay_recheck(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			struct sk_buff *skb, __be32 net_seq);
 
 static inline int xfrm_aevent_is_on(struct net *net)
 {
@@ -2067,22 +2077,24 @@ static inline unsigned int xfrm_replay_state_esn_len(struct xfrm_replay_state_es
 static inline int xfrm_replay_clone(struct xfrm_state *x,
 				     struct xfrm_state *orig)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
+	struct xfrm_sub_state *sx_orig = xfrm_sub_state_get(orig, orig->id.proto);
 	int i;
 
 	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
-		if (!orig->sx[i].replay_esn)
+		if (!sx_orig[i].replay_esn)
 			continue;
-		x->sx[i].replay_esn = kmemdup(orig->sx[i].replay_esn,
-					 xfrm_replay_state_esn_len(orig->sx[i].replay_esn),
+		sx[i].replay_esn = kmemdup(sx_orig[i].replay_esn,
+					 xfrm_replay_state_esn_len(sx_orig[i].replay_esn),
 					 GFP_KERNEL);
-		if (!x->sx[i].replay_esn)
+		if (!sx[i].replay_esn)
 			return -ENOMEM;
-		if (!orig->sx[i].preplay_esn)
+		if (!sx_orig[i].preplay_esn)
 			continue;
-		x->sx[i].preplay_esn = kmemdup(orig->sx[i].preplay_esn,
-					  xfrm_replay_state_esn_len(orig->sx[i].preplay_esn),
+		sx[i].preplay_esn = kmemdup(sx_orig[i].preplay_esn,
+					  xfrm_replay_state_esn_len(sx_orig[i].preplay_esn),
 					  GFP_KERNEL);
-		if (!x->sx[i].preplay_esn)
+		if (!sx[i].preplay_esn)
 			return -ENOMEM;
 	}
 

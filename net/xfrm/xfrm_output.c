@@ -492,7 +492,7 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct xfrm_state *x = dst->xfrm;
-	struct xfrm_sub_state *sx = &x->sx[0];
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	struct net *net = xs_net(x);
 
 	if (err <= 0 || x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
@@ -527,7 +527,7 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 			goto error;
 		}
 
-		err = xfrm_replay_overflow(x, skb);
+		err = xfrm_replay_overflow(x, sx, skb);
 		if (err) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATESEQERROR);
 			goto error;

@@ -604,6 +604,7 @@ EXPORT_SYMBOL(xfrm_state_free);
 static void xfrm_state_delete_tunnel(struct xfrm_state *x);
 static void xfrm_state_gc_destroy(struct xfrm_state *x)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	int i;
 
 	if (x->mode_cbs && x->mode_cbs->destroy_state)
@@ -617,8 +618,8 @@ static void xfrm_state_gc_destroy(struct xfrm_state *x)
 	kfree(x->encap);
 	kfree(x->coaddr);
 	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
-		kfree(x->sx[i].replay_esn);
-		kfree(x->sx[i].preplay_esn);
+		kfree(sx[i].replay_esn);
+		kfree(sx[i].preplay_esn);
 	}
 	kfree(x->sx);
 	xfrm_unset_type_offload(x);
@@ -653,7 +654,7 @@ static void xfrm_state_gc_task(struct work_struct *work)
 static enum hrtimer_restart xfrm_timer_handler(struct hrtimer *me)
 {
 	struct xfrm_state *x = container_of(me, struct xfrm_state, mtimer);
-	struct xfrm_sub_state *sx = &x->sx[0];
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	enum hrtimer_restart ret = HRTIMER_NORESTART;
 	time64_t now = ktime_get_real_seconds();
 	time64_t next = TIME64_MAX;
@@ -743,33 +744,78 @@ out:
 
 static void xfrm_replay_timer_handler(struct timer_list *t);
 
-static int xfrm_sub_state_alloc(struct xfrm_state *x)
+struct xfrm_sub_state *xfrm_sub_state_get(struct xfrm_state *x, __u8 proto)
 {
+	struct xfrm_sub_state *sxa;
 	struct xfrm_sub_state *sx;
-	int i;
 
-	sx = kcalloc(XFRM_MAX_SUB_STATES, sizeof(*sx), GFP_ATOMIC);
-	if (!sx)
-		return -ENOMEM;
+	if (proto == IPPROTO_EESP) {
+//		sxa = this_cpu_ptr(x->psx);
+		sxa = raw_cpu_ptr(x->psx);
+		sx = &sxa[0];
 
-	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
-		sx[i].curlft.add_time = ktime_get_real_seconds();
-		sx[i].lft.soft_byte_limit = XFRM_INF;
-		sx[i].lft.soft_packet_limit = XFRM_INF;
-		sx[i].lft.hard_byte_limit = XFRM_INF;
-		sx[i].lft.hard_packet_limit = XFRM_INF;
-		spin_lock_init(&sx[i].lock);
+	} else {
+		sx = x->sx;
 	}
 
-	x->sx = sx;
+	return sx;
+}
+EXPORT_SYMBOL(xfrm_sub_state_get);
+
+//int xfrm_sub_state_free(struct xfrm_state *x, __u8 proto)
+//{
+//
+//}
+
+int xfrm_sub_state_alloc(struct xfrm_state *x, __u8 proto)
+{
+	struct xfrm_sub_state __percpu *psx;
+	struct xfrm_sub_state *sx;
+	int i, cpu;
+
+	if (proto == IPPROTO_EESP) {
+		psx = __alloc_percpu(XFRM_MAX_SUB_STATES * sizeof(*sx), __alignof__(struct xfrm_sub_state));
+		if (!psx)
+			return -ENOMEM;
+
+//		for_each_online_cpu(cpu) {
+		for_each_possible_cpu(cpu) {
+			sx = per_cpu_ptr(psx, cpu);
+			for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+				sx[i].curlft.add_time = ktime_get_real_seconds();
+				sx[i].lft.soft_byte_limit = XFRM_INF;
+				sx[i].lft.soft_packet_limit = XFRM_INF;
+				sx[i].lft.hard_byte_limit = XFRM_INF;
+				sx[i].lft.hard_packet_limit = XFRM_INF;
+				spin_lock_init(&sx[i].lock);
+			}
+		}
+
+		x->psx = psx;
+
+	} else {
+		sx = kzalloc(sizeof(*sx), GFP_ATOMIC);
+		if (!sx)
+			return -ENOMEM;
+
+		sx->curlft.add_time = ktime_get_real_seconds();
+		sx->lft.soft_byte_limit = XFRM_INF;
+		sx->lft.soft_packet_limit = XFRM_INF;
+		sx->lft.hard_byte_limit = XFRM_INF;
+		sx->lft.hard_packet_limit = XFRM_INF;
+		spin_lock_init(&sx->lock);
+
+		x->sx = sx;
+	}
 
 	return 0;
 }
+EXPORT_SYMBOL(xfrm_sub_state_alloc);
 
 struct xfrm_state *xfrm_state_alloc(struct net *net)
 {
 	struct xfrm_state *x;
-	int err;
+//	int err;
 
 	x = kmem_cache_zalloc(xfrm_state_cache, GFP_ATOMIC);
 
@@ -791,11 +837,11 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
 		timer_setup(&x->rtimer, xfrm_replay_timer_handler, 0);
 	}
 
-	err = xfrm_sub_state_alloc(x);
-	if (err) {
-		kmem_cache_free(xfrm_state_cache, x);
-		return NULL;
-	}
+//	err = xfrm_sub_state_alloc(x);
+//	if (err) {
+//		kmem_cache_free(xfrm_state_cache, x);
+//		return NULL;
+//	}
 
 	return x;
 }
@@ -890,11 +936,12 @@ EXPORT_SYMBOL(__xfrm_state_delete);
 
 int xfrm_state_delete(struct xfrm_state *x)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	int err;
 
-	spin_lock_bh(&x->sx[0].lock);
+	spin_lock_bh(&sx[0].lock);
 	err = __xfrm_state_delete(x);
-	spin_unlock_bh(&x->sx[0].lock);
+	spin_unlock_bh(&sx[0].lock);
 
 	return err;
 }
@@ -1353,6 +1400,8 @@ static void xfrm_state_look_at(struct xfrm_policy *pol, struct xfrm_state *x,
 	 *    manager will do something to install a state with proper
 	 *    selector.
 	 */
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
+	struct xfrm_sub_state *sxb = xfrm_sub_state_get((*best), (*best)->id.proto);
 	if (x->km.state == XFRM_STATE_VALID) {
 		if ((x->sel.family &&
 		     (x->sel.family != family ||
@@ -1368,7 +1417,7 @@ static void xfrm_state_look_at(struct xfrm_policy *pol, struct xfrm_state *x,
 		    ((*best)->pcpu_num == UINT_MAX && x->pcpu_num == pcpu_id) ||
 		    (*best)->km.dying > x->km.dying ||
 		    ((*best)->km.dying == x->km.dying &&
-		     (*best)->sx->curlft.add_time < x->sx[0].curlft.add_time))
+		     sxb->curlft.add_time < sx[0].curlft.add_time))
 			*best = x;
 	} else if (x->km.state == XFRM_STATE_ACQ) {
 		if (!*best || x->pcpu_num == pcpu_id)
@@ -1396,6 +1445,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
 	unsigned int h, h_wildcard;
 	int i;
 	struct xfrm_state *x, *x0, *to_put;
+	struct xfrm_sub_state *sx;
 	int acquire_in_progress = 0;
 	int error = 0;
 	struct xfrm_state *best = NULL;
@@ -1622,8 +1672,9 @@ found:
 						  xfrm_state_deref_prot(net->xfrm.state_byseq, net) + h,
 						  x->xso.type);
 			}
+			sx = xfrm_sub_state_get(x, x->id.proto);
 			for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
-				x->sx[i].lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
+				sx[i].lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
 			hrtimer_start(&x->mtimer,
 				      ktime_set(net->xfrm.sysctl_acq_expires, 0),
 				      HRTIMER_MODE_REL_SOFT);
@@ -1755,7 +1806,7 @@ static struct xfrm_state *xfrm_state_lookup_spi_proto(struct net *net, __be32 sp
 
 static void __xfrm_state_insert(struct xfrm_state *x)
 {
-	struct xfrm_sub_state *sx = &x->sx[0];
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	struct net *net = xs_net(x);
 	unsigned int h;
 
@@ -1849,6 +1900,7 @@ static struct xfrm_state *__find_acq_core(struct net *net,
 {
 	unsigned int h = xfrm_dst_hash(net, daddr, saddr, reqid, family);
 	struct xfrm_state *x;
+	struct xfrm_sub_state *sx;
 	int i;
 	u32 mark = m->v & m->m;
 
@@ -1903,8 +1955,11 @@ static struct xfrm_state *__find_acq_core(struct net *net,
 		x->if_id = if_id;
 		x->mark.v = m->v;
 		x->mark.m = m->m;
+
+		sx = xfrm_sub_state_get(x, proto);
+
 		for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
-			x->sx[i].lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
+			sx[i].lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
 		xfrm_state_hold(x);
 		hrtimer_start(&x->mtimer,
 			      ktime_set(net->xfrm.sysctl_acq_expires, 0),
@@ -2013,8 +2068,10 @@ static struct xfrm_state *xfrm_state_clone_and_setup(struct xfrm_state *orig,
 					   struct xfrm_encap_tmpl *encap,
 					   struct xfrm_migrate *m)
 {
+	struct xfrm_sub_state *sx_orig = xfrm_sub_state_get(orig, orig->id.proto);
 	struct net *net = xs_net(orig);
 	struct xfrm_state *x = xfrm_state_alloc(net);
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	int err;
 	int i;
 
@@ -2024,13 +2081,13 @@ static struct xfrm_state *xfrm_state_clone_and_setup(struct xfrm_state *orig,
 	memcpy(&x->id, &orig->id, sizeof(x->id));
 	memcpy(&x->sel, &orig->sel, sizeof(x->sel));
 	for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
-		memcpy(&x->sx[i].lft, &orig->sx[i].lft,
-		       sizeof(x->sx[i].lft));
-		x->sx[i].replay_maxdiff = orig->sx[i].replay_maxdiff;
-		x->sx[i].replay_maxage = orig->sx[i].replay_maxage;
-		memcpy(&x->sx[i].curlft, &orig->sx[i].curlft,
-		       sizeof(x->sx[i].curlft));
-		x->sx[i].lastused = orig->sx[i].lastused;
+		memcpy(&sx[i].lft, &sx_orig[i].lft,
+		       sizeof(sx[i].lft));
+		sx[i].replay_maxdiff = sx_orig[i].replay_maxdiff;
+		sx[i].replay_maxage = sx_orig[i].replay_maxage;
+		memcpy(&sx[i].curlft, &sx_orig[i].curlft,
+		       sizeof(sx[i].curlft));
+		sx[i].lastused = sx_orig[i].lastused;
 	}
 	x->props.mode = orig->props.mode;
 	x->props.replay_window = orig->props.replay_window;
@@ -2226,8 +2283,9 @@ EXPORT_SYMBOL(xfrm_state_migrate);
 
 int xfrm_state_update(struct xfrm_state *x)
 {
-	struct xfrm_sub_state *sx = &x->sx[0];
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	struct xfrm_state *x1, *to_put;
+	struct xfrm_sub_state *sx1;
 	int err;
 	int i;
 	int use_spi = xfrm_id_proto_match(x->id.proto, IPSEC_PROTO_ANY);
@@ -2247,6 +2305,8 @@ int xfrm_state_update(struct xfrm_state *x)
 		err = -EEXIST;
 		goto out;
 	}
+
+	sx1 = xfrm_sub_state_get(x1, x1->id.proto);
 
 	if (x1->km.state == XFRM_STATE_ACQ) {
 		if (x->dir && x1->dir != x->dir) {
@@ -2280,7 +2340,7 @@ out:
 	}
 
 	err = -EINVAL;
-	spin_lock_bh(&x1->sx[0].lock);
+	spin_lock_bh(&sx1[0].lock);
 	if (likely(x1->km.state == XFRM_STATE_VALID)) {
 		if (x->encap && x1->encap &&
 		    x->encap->encap_type == x1->encap->encap_type)
@@ -2294,12 +2354,12 @@ out:
 		if (!use_spi && memcmp(&x1->sel, &x->sel, sizeof(x1->sel)))
 			memcpy(&x1->sel, &x->sel, sizeof(x1->sel));
 		for (i = 0; i < XFRM_MAX_SUB_STATES; i++)
-			memcpy(&x1->sx[i].lft, &sx->lft, sizeof(x1->sx[i].lft));
+			memcpy(&sx1[i].lft, &sx->lft, sizeof(sx1[i].lft));
 		x1->km.dying = 0;
 
 		hrtimer_start(&x1->mtimer, ktime_set(1, 0),
 			      HRTIMER_MODE_REL_SOFT);
-		if (READ_ONCE(x1->sx[0].curlft.use_time))
+		if (READ_ONCE(sx1[0].curlft.use_time))
 			xfrm_state_check_expire(x1);
 
 		if (x->props.smark.m || x->props.smark.v || x->if_id) {
@@ -2322,7 +2382,7 @@ out:
 	}
 
 fail:
-	spin_unlock_bh(&x1->sx[0].lock);
+	spin_unlock_bh(&sx1[0].lock);
 
 	xfrm_state_put(x1);
 
@@ -2332,7 +2392,7 @@ EXPORT_SYMBOL(xfrm_state_update);
 
 int xfrm_state_check_expire(struct xfrm_state *x)
 {
-	struct xfrm_sub_state *sx = &x->sx[0];
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	/* All counters which are needed to decide if state is expired
 	 * are handled by SW for non-packet offload modes. Simply skip
 	 * the following update and save extra boilerplate in drivers.
@@ -2628,6 +2688,7 @@ EXPORT_SYMBOL(verify_spi_info);
 int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high,
 		   struct netlink_ext_ack *extack)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	struct net *net = xs_net(x);
 	unsigned int h;
 	struct xfrm_state *x0;
@@ -2635,7 +2696,7 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high,
 	u32 range = high - low + 1;
 	__be32 newspi = 0;
 
-	spin_lock_bh(&x->sx[0].lock);
+	spin_lock_bh(&sx[0].lock);
 	if (x->km.state == XFRM_STATE_DEAD) {
 		NL_SET_ERR_MSG(extack, "Target ACQUIRE is in DEAD state");
 		goto unlock;
@@ -2681,7 +2742,7 @@ next:
 		NL_SET_ERR_MSG(extack, "No SPI available in the requested range");
 
 unlock:
-	spin_unlock_bh(&x->sx[0].lock);
+	spin_unlock_bh(&sx[0].lock);
 
 	return err;
 }
@@ -2773,8 +2834,9 @@ EXPORT_SYMBOL(xfrm_state_walk_done);
 static void xfrm_replay_timer_handler(struct timer_list *t)
 {
 	struct xfrm_state *x = container_of(t, struct xfrm_state, rtimer);
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 
-	spin_lock(&x->sx[0].lock);
+	spin_lock(&sx[0].lock);
 
 	if (x->km.state == XFRM_STATE_VALID) {
 		if (xfrm_aevent_is_on(xs_net(x)))
@@ -2783,7 +2845,7 @@ static void xfrm_replay_timer_handler(struct timer_list *t)
 			x->xflags |= XFRM_TIME_DEFER;
 	}
 
-	spin_unlock(&x->sx[0].lock);
+	spin_unlock(&sx[0].lock);
 }
 
 static LIST_HEAD(xfrm_km_list);

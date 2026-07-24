@@ -1768,9 +1768,10 @@ done:
 static bool iptfs_enqueue(struct xfrm_iptfs_data *xtfs, struct sk_buff *skb)
 {
 	u64 newsz = xtfs->queue_size + skb->len;
+	struct xfrm_sub_state *sxx = xfrm_sub_state_get(xtfs->x, xtfs->x->id.proto);
 	struct iphdr *iph;
 
-	assert_spin_locked(&xtfs->x->sx[0].lock);
+	assert_spin_locked(&sxx[0].lock);
 
 	if (newsz > xtfs->cfg.max_queue_size)
 		return false;
@@ -1831,6 +1832,7 @@ static int iptfs_output_collect(struct net *net, struct sock *sk, struct sk_buff
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct xfrm_state *x = dst->xfrm;
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	struct xfrm_iptfs_data *xtfs = x->mode_data;
 	struct sk_buff *segs, *nskb;
 	u32 pmtu = 0;
@@ -1878,7 +1880,7 @@ static int iptfs_output_collect(struct net *net, struct sock *sk, struct sk_buff
 	/* We can be running on multiple cores and from the network softirq or
 	 * from user context depending on where the packet is coming from.
 	 */
-	spin_lock_bh(&x->sx[0].lock);
+	spin_lock_bh(&sx[0].lock);
 
 	skb_list_walk_safe(segs, skb, nskb) {
 		skb_mark_not_on_list(skb);
@@ -1918,7 +1920,7 @@ nospace:
 		trace_iptfs_timer_start(xtfs, xtfs->init_delay_ns);
 	}
 
-	spin_unlock_bh(&x->sx[0].lock);
+	spin_unlock_bh(&sx[0].lock);
 	return 0;
 }
 
@@ -2318,10 +2320,12 @@ static enum hrtimer_restart iptfs_delay_timer(struct hrtimer *me)
 	struct sk_buff_head list;
 	struct xfrm_iptfs_data *xtfs;
 	struct xfrm_state *x;
+	struct xfrm_sub_state *sx;
 	time64_t settime;
 
 	xtfs = container_of(me, typeof(*xtfs), iptfs_timer);
 	x = xtfs->x;
+	sx = xfrm_sub_state_get(x, x->id.proto);
 
 	/* Process all the queued packets
 	 *
@@ -2331,12 +2335,12 @@ static enum hrtimer_restart iptfs_delay_timer(struct hrtimer *me)
 	 * ingress packets for us to process and transmit.
 	 */
 
-	spin_lock(&x->sx[0].lock);
+	spin_lock(&sx[0].lock);
 	__skb_queue_head_init(&list);
 	skb_queue_splice_init(&xtfs->queue, &list);
 	xtfs->queue_size = 0;
 	settime = xtfs->iptfs_settime;
-	spin_unlock(&x->sx[0].lock);
+	spin_unlock(&sx[0].lock);
 
 	/* After the above unlock, packets can begin queuing again, and the
 	 * timer can be set again, from another CPU either in softirq or user
@@ -2701,6 +2705,7 @@ static int iptfs_init_state(struct xfrm_state *x)
 static void iptfs_destroy_state(struct xfrm_state *x)
 {
 	struct xfrm_iptfs_data *xtfs = x->mode_data;
+	struct xfrm_sub_state *sxx = xfrm_sub_state_get(xtfs->x, xtfs->x->id.proto);
 	struct sk_buff_head list;
 	struct skb_wseq *s, *se;
 	struct sk_buff *skb;
@@ -2708,11 +2713,11 @@ static void iptfs_destroy_state(struct xfrm_state *x)
 	if (!xtfs)
 		return;
 
-	spin_lock_bh(&xtfs->x->sx[0].lock);
+	spin_lock_bh(&sxx[0].lock);
 	hrtimer_cancel(&xtfs->iptfs_timer);
 	__skb_queue_head_init(&list);
 	skb_queue_splice_init(&xtfs->queue, &list);
-	spin_unlock_bh(&xtfs->x->sx[0].lock);
+	spin_unlock_bh(&sxx[0].lock);
 
 	while ((skb = __skb_dequeue(&list)))
 		kfree_skb(skb);
