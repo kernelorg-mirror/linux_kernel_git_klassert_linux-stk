@@ -2197,7 +2197,7 @@ static int cc_rfc4106_gcm_encrypt(struct aead_request *req)
 	struct aead_req_ctx *areq_ctx = aead_request_ctx_dma(req);
 	int rc;
 
-	rc = crypto_ipsec_check_assoclen(req->assoclen);
+	rc = crypto_ipsec_check_assoclen_any(req->assoclen);
 	if (rc)
 		goto out;
 
@@ -2248,7 +2248,7 @@ static int cc_rfc4106_gcm_decrypt(struct aead_request *req)
 	struct aead_req_ctx *areq_ctx = aead_request_ctx_dma(req);
 	int rc;
 
-	rc = crypto_ipsec_check_assoclen(req->assoclen);
+	rc = crypto_ipsec_check_assoclen_any(req->assoclen);
 	if (rc)
 		goto out;
 

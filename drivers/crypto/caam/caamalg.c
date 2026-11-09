@@ -1678,12 +1678,12 @@ static int gcm_decrypt(struct aead_request *req)
 
 static int ipsec_gcm_encrypt(struct aead_request *req)
 {
-	return crypto_ipsec_check_assoclen(req->assoclen) ? : gcm_encrypt(req);
+	return crypto_ipsec_check_assoclen_any(req->assoclen) ? : gcm_encrypt(req);
 }
 
 static int ipsec_gcm_decrypt(struct aead_request *req)
 {
-	return crypto_ipsec_check_assoclen(req->assoclen) ? : gcm_decrypt(req);
+	return crypto_ipsec_check_assoclen_any(req->assoclen) ? : gcm_decrypt(req);
 }
 
 /*

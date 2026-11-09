@@ -512,12 +512,12 @@ static int crypto_rfc4106_encrypt(struct aead_request *req)
 {
 	int err;
 
-	err = crypto_ipsec_check_assoclen(req->assoclen);
+	/* RFC4106 and EESP have different AAD layouts, check them separately. */
+	err = crypto_ipsec_check_assoclen_any(req->assoclen);
 	if (err)
 		return err;
 
 	req = crypto_rfc4106_crypt(req);
-
 	return crypto_aead_encrypt(req);
 }
 
@@ -525,7 +525,8 @@ static int crypto_rfc4106_decrypt(struct aead_request *req)
 {
 	int err;
 
-	err = crypto_ipsec_check_assoclen(req->assoclen);
+	/* RFC4106 and EESP have different AAD layouts, check them separately. */
+	err = crypto_ipsec_check_assoclen_any(req->assoclen);
 	if (err)
 		return err;
 

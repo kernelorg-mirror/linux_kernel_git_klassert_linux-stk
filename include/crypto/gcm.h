@@ -61,4 +61,42 @@ static inline int crypto_ipsec_check_assoclen(unsigned int assoclen)
 	return 0;
 }
 
+/*
+ * validate assoclen for EESP
+ *
+ * EESP has a different associated data layout than RFC4106. Keep its check
+ * separate from crypto_ipsec_check_assoclen() so that the RFC4106 semantics
+ * do not change for the other users of that helper.
+ *
+ * The length is the EESP associated data (base header + peer header without
+ * the IV) plus the IV that seqiv adds to it.
+ */
+static inline int crypto_eesp_check_assoclen(unsigned int assoclen)
+{
+	switch (assoclen) {
+	case 24:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/*
+ * validate assoclen for the RFC4106 based IPsec AEADs
+ *
+ * The RFC4106 based AEADs are shared by ESP (RFC4106) and EESP. Both
+ * protocols have their own associated data layout, so accept the lengths of
+ * both protocols here. Use crypto_ipsec_check_assoclen() to check for the
+ * RFC4106 lengths only.
+ */
+static inline int crypto_ipsec_check_assoclen_any(unsigned int assoclen)
+{
+	if (!crypto_ipsec_check_assoclen(assoclen))
+		return 0;
+
+	return crypto_eesp_check_assoclen(assoclen);
+}
+
 #endif

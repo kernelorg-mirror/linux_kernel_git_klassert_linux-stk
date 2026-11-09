@@ -1199,13 +1199,13 @@ static int aead_decrypt(struct aead_request *req)
 
 static int ipsec_gcm_encrypt(struct aead_request *req)
 {
-	return crypto_ipsec_check_assoclen(req->assoclen) ? : aead_crypt(req,
+	return crypto_ipsec_check_assoclen_any(req->assoclen) ? : aead_crypt(req,
 					   true);
 }
 
 static int ipsec_gcm_decrypt(struct aead_request *req)
 {
-	return crypto_ipsec_check_assoclen(req->assoclen) ? : aead_crypt(req,
+	return crypto_ipsec_check_assoclen_any(req->assoclen) ? : aead_crypt(req,
 					   false);
 }
 

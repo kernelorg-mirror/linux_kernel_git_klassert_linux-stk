@@ -3566,13 +3566,13 @@ static int safexcel_rfc4106_gcm_setauthsize(struct crypto_aead *tfm,
 
 static int safexcel_rfc4106_encrypt(struct aead_request *req)
 {
-	return crypto_ipsec_check_assoclen(req->assoclen) ?:
+	return crypto_ipsec_check_assoclen_any(req->assoclen) ?:
 	       safexcel_aead_encrypt(req);
 }
 
 static int safexcel_rfc4106_decrypt(struct aead_request *req)
 {
-	return crypto_ipsec_check_assoclen(req->assoclen) ?:
+	return crypto_ipsec_check_assoclen_any(req->assoclen) ?:
 	       safexcel_aead_decrypt(req);
 }
 

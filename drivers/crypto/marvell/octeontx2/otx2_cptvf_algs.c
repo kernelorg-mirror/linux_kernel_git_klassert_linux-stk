@@ -1000,7 +1000,7 @@ static inline int create_aead_ctx_hdr(struct aead_request *req, u32 enc,
 		break;
 
 	case OTX2_CPT_AES_GCM:
-		if (crypto_ipsec_check_assoclen(req->assoclen))
+		if (crypto_ipsec_check_assoclen_any(req->assoclen))
 			return -EINVAL;
 
 		fctx->enc.enc_ctrl.e.iv_source = OTX2_CPT_FROM_DPTR;

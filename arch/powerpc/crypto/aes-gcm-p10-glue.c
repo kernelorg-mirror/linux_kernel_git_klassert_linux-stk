@@ -341,7 +341,7 @@ static int rfc4106_encrypt(struct aead_request *req)
 	memcpy(iv, ctx->nonce, RFC4106_NONCE_SIZE);
 	memcpy(iv + RFC4106_NONCE_SIZE, req->iv, GCM_RFC4106_IV_SIZE);
 
-	return crypto_ipsec_check_assoclen(req->assoclen) ?:
+	return crypto_ipsec_check_assoclen_any(req->assoclen) ?:
 	       p10_aes_gcm_crypt(req, iv, req->assoclen - GCM_RFC4106_IV_SIZE, 1);
 }
 
@@ -354,7 +354,7 @@ static int rfc4106_decrypt(struct aead_request *req)
 	memcpy(iv, ctx->nonce, RFC4106_NONCE_SIZE);
 	memcpy(iv + RFC4106_NONCE_SIZE, req->iv, GCM_RFC4106_IV_SIZE);
 
-	return crypto_ipsec_check_assoclen(req->assoclen) ?:
+	return crypto_ipsec_check_assoclen_any(req->assoclen) ?:
 	       p10_aes_gcm_crypt(req, iv, req->assoclen - GCM_RFC4106_IV_SIZE, 0);
 }
 

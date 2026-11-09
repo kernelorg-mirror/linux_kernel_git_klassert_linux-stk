@@ -865,7 +865,7 @@ static __maybe_unused int crypto_aes_rfc4106_encrypt(struct aead_request *req)
 	const struct aes_rfc4106_key *key = crypto_aead_ctx(tfm);
 	u8 iv[12];
 
-	if (crypto_ipsec_check_assoclen(req->assoclen) != 0)
+	if (crypto_ipsec_check_assoclen_any(req->assoclen) != 0)
 		return -EINVAL;
 	memcpy(iv, key->nonce, 4);
 	memcpy(&iv[4], req->iv, 8);
@@ -880,7 +880,7 @@ static __maybe_unused int crypto_aes_rfc4106_decrypt(struct aead_request *req)
 	const struct aes_rfc4106_key *key = crypto_aead_ctx(tfm);
 	u8 iv[12];
 
-	if (crypto_ipsec_check_assoclen(req->assoclen) != 0)
+	if (crypto_ipsec_check_assoclen_any(req->assoclen) != 0)
 		return -EINVAL;
 	memcpy(iv, key->nonce, 4);
 	memcpy(&iv[4], req->iv, 8);

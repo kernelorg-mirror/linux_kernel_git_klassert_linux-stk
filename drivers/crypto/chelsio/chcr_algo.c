@@ -3633,7 +3633,7 @@ static int chcr_aead_op(struct aead_request *req,
 	}
 
 	if (get_aead_subtype(tfm) == CRYPTO_ALG_SUB_TYPE_AEAD_RFC4106 &&
-	    crypto_ipsec_check_assoclen(req->assoclen) != 0) {
+	    crypto_ipsec_check_assoclen_any(req->assoclen) != 0) {
 		pr_err("RFC4106: Invalid value of assoclen %d\n",
 		       req->assoclen);
 		return -EINVAL;

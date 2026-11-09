@@ -603,7 +603,8 @@ gcm_crypt(struct aead_request *req, int flags)
 	/* Initialize the counter and determine the associated data length. */
 	le_ctr[0] = 2;
 	if (flags & FLAG_RFC4106) {
-		if (unlikely(assoclen != 16 && assoclen != 20))
+		/* RFC4106 and EESP have different AAD layouts, accept both. */
+		if (unlikely(crypto_ipsec_check_assoclen_any(assoclen)))
 			return -EINVAL;
 		assoclen -= 8;
 		le_ctr[1] = get_unaligned_be32(req->iv + 4);
