@@ -4674,6 +4674,7 @@ int xfrm_migrate(const struct xfrm_selector *sel, u8 dir, u8 type,
 	struct xfrm_state *x, *xc;
 	struct xfrm_state *x_cur[XFRM_MAX_DEPTH];
 	struct xfrm_state *x_new[XFRM_MAX_DEPTH];
+	struct xfrm_migrate *m_cur[XFRM_MAX_DEPTH];
 	struct xfrm_migrate *mp;
 
 	/* Stage 0 - sanity checks */
@@ -4695,16 +4696,17 @@ int xfrm_migrate(const struct xfrm_selector *sel, u8 dir, u8 type,
 		goto out;
 	}
 
-	/* Stage 2 - find and update state(s) */
+	/* Stage 2 - prepare all state(s), leaving live sub states untouched. */
 	for (i = 0, mp = m; i < num_migrate; i++, mp++) {
 		if ((x = xfrm_migrate_state_find(mp, net, if_id))) {
 			x_cur[nx_cur] = x;
+			m_cur[nx_cur] = mp;
 			nx_cur++;
 			mp->encap = encap;
 			mp->xuo = xuo;
 			xfrm_migrate_copy_old(x, mp);
 
-			xc = xfrm_state_migrate(x, mp, net, extack);
+			xc = xfrm_state_migrate_create(x, mp, net, extack);
 			if (xc) {
 				x_new[nx_new] = xc;
 				nx_new++;
@@ -4720,11 +4722,17 @@ int xfrm_migrate(const struct xfrm_selector *sel, u8 dir, u8 type,
 	if (err < 0)
 		goto restore_state;
 
-	/* Stage 4 - delete old state(s) */
-	if (nx_cur) {
-		xfrm_states_put(x_cur, nx_cur);
-		xfrm_states_delete(x_cur, nx_cur);
+	/* Stage 4 - commit each prepared state. Published destinations keep
+	 * their live replay storage if a later commit fails.
+	 */
+	for (i = 0; i < nx_new; i++) {
+		err = xfrm_state_migrate_install(x_cur[i], x_new[i], m_cur[i], extack);
+		x_new[i] = NULL;
+		if (err)
+			goto restore_state;
 	}
+	if (nx_cur)
+		xfrm_states_put(x_cur, nx_cur);
 
 	/* Stage 5 - announce */
 	km_migrate(sel, dir, type, m, num_migrate, k, net, encap);
@@ -4740,8 +4748,12 @@ restore_state:
 		xfrm_pol_put(pol);
 	if (nx_cur)
 		xfrm_states_put(x_cur, nx_cur);
-	if (nx_new)
-		xfrm_states_delete(x_new, nx_new);
+	for (i = 0; i < nx_new; i++) {
+		if (x_new[i]) {
+			x_new[i]->km.state = XFRM_STATE_DEAD;
+			xfrm_state_put(x_new[i]);
+		}
+	}
 
 	return err;
 }

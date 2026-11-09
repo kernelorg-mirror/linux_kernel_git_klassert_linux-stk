@@ -2700,6 +2700,7 @@ static u32 pktgen_dst_metrics[RTAX_MAX + 1] = {
 static int pktgen_output_ipsec(struct sk_buff *skb, struct pktgen_dev *pkt_dev)
 {
 	struct xfrm_state *x = pkt_dev->flows[pkt_dev->curfl].x;
+	struct xfrm_sub_state *sx;
 	int err = 0;
 	struct net *net = dev_net(pkt_dev->odev);
 
@@ -2729,10 +2730,17 @@ static int pktgen_output_ipsec(struct sk_buff *skb, struct pktgen_dev *pkt_dev)
 		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEPROTOERROR);
 		goto error;
 	}
-	spin_lock_bh(&x->lock);
-	x->curlft.bytes += skb->len;
-	x->curlft.packets++;
-	spin_unlock_bh(&x->lock);
+	xfrm_sub_state_lock_bh(x);
+	sx = xfrm_sub_state_get(x);
+	if (!sx) {
+		xfrm_sub_state_unlock_bh(x);
+		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+		err = -ENOENT;
+		goto error;
+	}
+	sx->curlbt.bytes += skb->len;
+	sx->curlbt.packets++;
+	xfrm_sub_state_unlock_bh(x);
 error:
 	return err;
 }

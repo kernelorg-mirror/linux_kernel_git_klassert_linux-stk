@@ -9,12 +9,12 @@
 #include <linux/export.h>
 #include <net/xfrm.h>
 
-u32 xfrm_replay_seqhi(struct xfrm_state *x, __be32 net_seq)
+u32 xfrm_replay_seqhi(struct xfrm_sub_state *sx, __be32 net_seq)
 {
 	u32 seq, seq_hi, bottom;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = xfrm_replay_state_get(sx);
 
-	if (!(x->props.flags & XFRM_STATE_ESN))
+	if (!replay_esn)
 		return 0;
 
 	seq = ntohl(net_seq);
@@ -40,6 +40,7 @@ static void xfrm_replay_notify_esn(struct xfrm_state *x, int event);
 
 void xfrm_replay_notify(struct xfrm_state *x, int event)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x);
 	struct km_event c;
 	/* we send notify messages in case
 	 *  1. we updated on of the sequence numbers, and the seqno difference
@@ -50,6 +51,9 @@ void xfrm_replay_notify(struct xfrm_state *x, int event)
 	 *
 	 *  The state structure must be locked!
 	 */
+
+	if (!sx)
+		return;
 
 	switch (x->repl_mode) {
 	case XFRM_REPLAY_MODE_LEGACY:
@@ -65,9 +69,9 @@ void xfrm_replay_notify(struct xfrm_state *x, int event)
 	switch (event) {
 	case XFRM_REPLAY_UPDATE:
 		if (!x->replay_maxdiff ||
-		    ((x->replay.seq - x->preplay.seq < x->replay_maxdiff) &&
-		    (x->replay.oseq - x->preplay.oseq < x->replay_maxdiff))) {
-			if (x->xflags & XFRM_TIME_DEFER)
+		    ((sx->replay.seq - sx->preplay.seq < x->replay_maxdiff) &&
+		    (sx->replay.oseq - sx->preplay.oseq < x->replay_maxdiff))) {
+			if (READ_ONCE(x->xflags) & XFRM_TIME_DEFER)
 				event = XFRM_REPLAY_TIMEOUT;
 			else
 				return;
@@ -76,36 +80,42 @@ void xfrm_replay_notify(struct xfrm_state *x, int event)
 		break;
 
 	case XFRM_REPLAY_TIMEOUT:
-		if (memcmp(&x->replay, &x->preplay,
+		if (memcmp(&sx->replay, &sx->preplay,
 			   sizeof(struct xfrm_replay_state)) == 0) {
+			write_seqlock(&x->slock);
 			x->xflags |= XFRM_TIME_DEFER;
+			write_sequnlock(&x->slock);
 			return;
 		}
 
 		break;
 	}
 
-	memcpy(&x->preplay, &x->replay, sizeof(struct xfrm_replay_state));
+	memcpy(&sx->preplay, &sx->replay, sizeof(struct xfrm_replay_state));
 	c.event = XFRM_MSG_NEWAE;
 	c.data.aevent = event;
 	km_state_notify(x, &c);
 
 	if (x->replay_maxage &&
-	    !mod_timer(&x->rtimer, jiffies + x->replay_maxage))
+	    !mod_timer(&x->rtimer, jiffies + x->replay_maxage)) {
+		write_seqlock(&x->slock);
 		x->xflags &= ~XFRM_TIME_DEFER;
+		write_sequnlock(&x->slock);
+	}
 }
 
-static int __xfrm_replay_overflow(struct xfrm_state *x, struct sk_buff *skb)
+static int __xfrm_replay_overflow(struct xfrm_state *x,
+				  struct xfrm_sub_state *sx, struct sk_buff *skb)
 {
 	int err = 0;
 	struct net *net = xs_net(x);
 
 	if (x->type->flags & XFRM_TYPE_REPLAY_PROT) {
-		XFRM_SKB_CB(skb)->seq.output.low = ++x->replay.oseq;
+		XFRM_SKB_CB(skb)->seq.output.low = ++sx->replay.oseq;
 		XFRM_SKB_CB(skb)->seq.output.hi = 0;
-		if (unlikely(x->replay.oseq == 0) &&
+		if (unlikely(sx->replay.oseq == 0) &&
 		    !(x->props.extra_flags & XFRM_SA_XFLAG_OSEQ_MAY_WRAP)) {
-			x->replay.oseq--;
+			sx->replay.oseq--;
 			xfrm_audit_state_replay_overflow(x, skb);
 			err = -EOVERFLOW;
 
@@ -118,7 +128,7 @@ static int __xfrm_replay_overflow(struct xfrm_state *x, struct sk_buff *skb)
 	return err;
 }
 
-static int xfrm_replay_check_legacy(struct xfrm_state *x,
+static int xfrm_replay_check_legacy(struct xfrm_state *x, struct xfrm_sub_state *sx,
 				    struct sk_buff *skb, __be32 net_seq)
 {
 	u32 diff;
@@ -130,30 +140,30 @@ static int xfrm_replay_check_legacy(struct xfrm_state *x,
 	if (unlikely(seq == 0))
 		goto err;
 
-	if (likely(seq > x->replay.seq))
+	if (likely(seq > sx->replay.seq))
 		return 0;
 
-	diff = x->replay.seq - seq;
+	diff = sx->replay.seq - seq;
 	if (diff >= x->props.replay_window) {
-		x->stats.replay_window++;
+		sx->stats.replay_window++;
 		goto err;
 	}
 
-	if (x->replay.bitmap & (1U << diff)) {
-		x->stats.replay++;
+	if (sx->replay.bitmap & (1U << diff)) {
+		sx->stats.replay++;
 		goto err;
 	}
 	return 0;
 
 err:
-	xfrm_audit_state_replay(x, skb, net_seq);
 	return -EINVAL;
 }
 
-static void xfrm_replay_advance_bmp(struct xfrm_state *x, __be32 net_seq);
-static void xfrm_replay_advance_esn(struct xfrm_state *x, __be32 net_seq);
+static void xfrm_replay_advance_bmp(struct xfrm_sub_state *sx, __be32 net_seq);
+static void xfrm_replay_advance_esn(struct xfrm_sub_state *sx, __be32 net_seq);
 
-void xfrm_replay_advance(struct xfrm_state *x, __be32 net_seq)
+void xfrm_replay_advance(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			 __be32 net_seq)
 {
 	u32 diff, seq;
 
@@ -161,35 +171,40 @@ void xfrm_replay_advance(struct xfrm_state *x, __be32 net_seq)
 	case XFRM_REPLAY_MODE_LEGACY:
 		break;
 	case XFRM_REPLAY_MODE_BMP:
-		return xfrm_replay_advance_bmp(x, net_seq);
+		xfrm_replay_advance_bmp(sx, net_seq);
+		goto out;
 	case XFRM_REPLAY_MODE_ESN:
-		return xfrm_replay_advance_esn(x, net_seq);
+		xfrm_replay_advance_esn(sx, net_seq);
+		xfrm_dev_state_advance_esn(x);
+		goto out;
 	}
 
 	if (!x->props.replay_window)
 		return;
 
 	seq = ntohl(net_seq);
-	if (seq > x->replay.seq) {
-		diff = seq - x->replay.seq;
+	if (seq > sx->replay.seq) {
+		diff = seq - sx->replay.seq;
 		if (diff < x->props.replay_window)
-			x->replay.bitmap = ((x->replay.bitmap) << diff) | 1;
+			sx->replay.bitmap = ((sx->replay.bitmap) << diff) | 1;
 		else
-			x->replay.bitmap = 1;
-		x->replay.seq = seq;
+			sx->replay.bitmap = 1;
+		sx->replay.seq = seq;
 	} else {
-		diff = x->replay.seq - seq;
-		x->replay.bitmap |= (1U << diff);
+		diff = sx->replay.seq - seq;
+		sx->replay.bitmap |= (1U << diff);
 	}
 
+out:
 	if (xfrm_aevent_is_on(xs_net(x)))
 		xfrm_replay_notify(x, XFRM_REPLAY_UPDATE);
 }
 
-static int xfrm_replay_overflow_bmp(struct xfrm_state *x, struct sk_buff *skb)
+static int xfrm_replay_overflow_bmp(struct xfrm_state *x,
+				    struct xfrm_sub_state *sx, struct sk_buff *skb)
 {
 	int err = 0;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = sx->replay_esn;
 	struct net *net = xs_net(x);
 
 	if (x->type->flags & XFRM_TYPE_REPLAY_PROT) {
@@ -210,11 +225,11 @@ static int xfrm_replay_overflow_bmp(struct xfrm_state *x, struct sk_buff *skb)
 	return err;
 }
 
-static int xfrm_replay_check_bmp(struct xfrm_state *x,
+static int xfrm_replay_check_bmp(struct xfrm_sub_state *sx,
 				 struct sk_buff *skb, __be32 net_seq)
 {
 	unsigned int bitnr, nr;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = sx->replay_esn;
 	u32 pos;
 	u32 seq = ntohl(net_seq);
 	u32 diff =  replay_esn->seq - seq;
@@ -229,7 +244,7 @@ static int xfrm_replay_check_bmp(struct xfrm_state *x,
 		return 0;
 
 	if (diff >= replay_esn->replay_window) {
-		x->stats.replay_window++;
+		sx->stats.replay_window++;
 		goto err;
 	}
 
@@ -248,17 +263,16 @@ static int xfrm_replay_check_bmp(struct xfrm_state *x,
 	return 0;
 
 err_replay:
-	x->stats.replay++;
+	sx->stats.replay++;
 err:
-	xfrm_audit_state_replay(x, skb, net_seq);
 	return -EINVAL;
 }
 
-static void xfrm_replay_advance_bmp(struct xfrm_state *x, __be32 net_seq)
+static void xfrm_replay_advance_bmp(struct xfrm_sub_state *sx , __be32 net_seq)
 {
 	unsigned int bitnr, nr, i;
 	u32 diff;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = sx->replay_esn;
 	u32 seq = ntohl(net_seq);
 	u32 pos;
 
@@ -297,16 +311,20 @@ static void xfrm_replay_advance_bmp(struct xfrm_state *x, __be32 net_seq)
 	nr = bitnr >> 5;
 	bitnr = bitnr & 0x1F;
 	replay_esn->bmp[nr] |= (1U << bitnr);
-
-	if (xfrm_aevent_is_on(xs_net(x)))
-		xfrm_replay_notify(x, XFRM_REPLAY_UPDATE);
 }
 
 static void xfrm_replay_notify_bmp(struct xfrm_state *x, int event)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x);
 	struct km_event c;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
-	struct xfrm_replay_state_esn *preplay_esn = x->preplay_esn;
+	struct xfrm_replay_state_esn *replay_esn;
+	struct xfrm_replay_state_esn *preplay_esn;
+
+	if (!sx)
+		return;
+
+	replay_esn = xfrm_replay_state_get(sx);
+	preplay_esn = xfrm_preplay_state_get(sx);
 
 	/* we send notify messages in case
 	 *  1. we updated on of the sequence numbers, and the seqno difference
@@ -324,7 +342,7 @@ static void xfrm_replay_notify_bmp(struct xfrm_state *x, int event)
 		    ((replay_esn->seq - preplay_esn->seq < x->replay_maxdiff) &&
 		    (replay_esn->oseq - preplay_esn->oseq
 		     < x->replay_maxdiff))) {
-			if (x->xflags & XFRM_TIME_DEFER)
+			if (READ_ONCE(x->xflags) & XFRM_TIME_DEFER)
 				event = XFRM_REPLAY_TIMEOUT;
 			else
 				return;
@@ -333,32 +351,44 @@ static void xfrm_replay_notify_bmp(struct xfrm_state *x, int event)
 		break;
 
 	case XFRM_REPLAY_TIMEOUT:
-		if (memcmp(x->replay_esn, x->preplay_esn,
+		if (memcmp(replay_esn, preplay_esn,
 			   xfrm_replay_state_esn_len(replay_esn)) == 0) {
+			write_seqlock(&x->slock);
 			x->xflags |= XFRM_TIME_DEFER;
+			write_sequnlock(&x->slock);
 			return;
 		}
 
 		break;
 	}
 
-	memcpy(x->preplay_esn, x->replay_esn,
+	memcpy(preplay_esn, replay_esn,
 	       xfrm_replay_state_esn_len(replay_esn));
 	c.event = XFRM_MSG_NEWAE;
 	c.data.aevent = event;
 	km_state_notify(x, &c);
 
 	if (x->replay_maxage &&
-	    !mod_timer(&x->rtimer, jiffies + x->replay_maxage))
+	    !mod_timer(&x->rtimer, jiffies + x->replay_maxage)) {
+		write_seqlock(&x->slock);
 		x->xflags &= ~XFRM_TIME_DEFER;
+		write_sequnlock(&x->slock);
+	}
 }
 
 static void xfrm_replay_notify_esn(struct xfrm_state *x, int event)
 {
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x);
 	u32 seq_diff, oseq_diff;
 	struct km_event c;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
-	struct xfrm_replay_state_esn *preplay_esn = x->preplay_esn;
+	struct xfrm_replay_state_esn *replay_esn;
+	struct xfrm_replay_state_esn *preplay_esn;
+
+	if (!sx)
+		return;
+
+	replay_esn = xfrm_replay_state_get(sx);
+	preplay_esn = xfrm_preplay_state_get(sx);
 
 	/* we send notify messages in case
 	 *  1. we updated on of the sequence numbers, and the seqno difference
@@ -391,7 +421,7 @@ static void xfrm_replay_notify_esn(struct xfrm_state *x, int event)
 				break;
 		}
 
-		if (x->xflags & XFRM_TIME_DEFER)
+		if (READ_ONCE(x->xflags) & XFRM_TIME_DEFER)
 			event = XFRM_REPLAY_TIMEOUT;
 		else
 			return;
@@ -399,31 +429,39 @@ static void xfrm_replay_notify_esn(struct xfrm_state *x, int event)
 		break;
 
 	case XFRM_REPLAY_TIMEOUT:
-		if (memcmp(x->replay_esn, x->preplay_esn,
+		if (memcmp(replay_esn, preplay_esn,
 			   xfrm_replay_state_esn_len(replay_esn)) == 0) {
+			write_seqlock(&x->slock);
 			x->xflags |= XFRM_TIME_DEFER;
+			write_sequnlock(&x->slock);
 			return;
 		}
 
 		break;
 	}
 
-	memcpy(x->preplay_esn, x->replay_esn,
+	memcpy(preplay_esn, replay_esn,
 	       xfrm_replay_state_esn_len(replay_esn));
 	c.event = XFRM_MSG_NEWAE;
 	c.data.aevent = event;
 	km_state_notify(x, &c);
 
 	if (x->replay_maxage &&
-	    !mod_timer(&x->rtimer, jiffies + x->replay_maxage))
+	    !mod_timer(&x->rtimer, jiffies + x->replay_maxage)) {
+		write_seqlock(&x->slock);
 		x->xflags &= ~XFRM_TIME_DEFER;
+		write_sequnlock(&x->slock);
+	}
 }
 
-static int xfrm_replay_overflow_esn(struct xfrm_state *x, struct sk_buff *skb)
+static int xfrm_replay_overflow_esn(struct xfrm_state *x, struct xfrm_sub_state *sx, struct sk_buff *skb)
 {
 	int err = 0;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = xfrm_replay_state_get(sx);
 	struct net *net = xs_net(x);
+
+	if (!replay_esn)
+		return -EINVAL;
 
 	if (x->type->flags & XFRM_TYPE_REPLAY_PROT) {
 		XFRM_SKB_CB(skb)->seq.output.low = ++replay_esn->oseq;
@@ -448,17 +486,24 @@ static int xfrm_replay_overflow_esn(struct xfrm_state *x, struct sk_buff *skb)
 	return err;
 }
 
-static int xfrm_replay_check_esn(struct xfrm_state *x,
+static int xfrm_replay_check_esn(struct xfrm_sub_state *sx,
 				 struct sk_buff *skb, __be32 net_seq)
 {
 	unsigned int bitnr, nr;
 	u32 diff;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = xfrm_replay_state_get(sx);
 	u32 pos;
 	u32 seq = ntohl(net_seq);
-	u32 wsize = replay_esn->replay_window;
-	u32 top = replay_esn->seq;
-	u32 bottom = top - wsize + 1;
+	u32 wsize;
+	u32 top;
+	u32 bottom;
+
+	if (!replay_esn)
+		return -EINVAL;
+
+	wsize = replay_esn->replay_window;
+	top = replay_esn->seq;
+	bottom = top - wsize + 1;
 
 	if (!wsize)
 		return 0;
@@ -482,7 +527,7 @@ static int xfrm_replay_check_esn(struct xfrm_state *x,
 	}
 
 	if (diff >= replay_esn->replay_window) {
-		x->stats.replay_window++;
+		sx->stats.replay_window++;
 		goto err;
 	}
 
@@ -501,40 +546,39 @@ static int xfrm_replay_check_esn(struct xfrm_state *x,
 	return 0;
 
 err_replay:
-	x->stats.replay++;
+	sx->stats.replay++;
 err:
-	xfrm_audit_state_replay(x, skb, net_seq);
 	return -EINVAL;
 }
 
-int xfrm_replay_check(struct xfrm_state *x,
+int xfrm_replay_check(struct xfrm_state *x, struct xfrm_sub_state *sx,
 		      struct sk_buff *skb, __be32 net_seq)
 {
 	switch (x->repl_mode) {
 	case XFRM_REPLAY_MODE_LEGACY:
 		break;
 	case XFRM_REPLAY_MODE_BMP:
-		return xfrm_replay_check_bmp(x, skb, net_seq);
+		return xfrm_replay_check_bmp(sx, skb, net_seq);
 	case XFRM_REPLAY_MODE_ESN:
-		return xfrm_replay_check_esn(x, skb, net_seq);
+		return xfrm_replay_check_esn(sx, skb, net_seq);
 	}
 
-	return xfrm_replay_check_legacy(x, skb, net_seq);
+	return xfrm_replay_check_legacy(x, sx, skb, net_seq);
 }
 
-static int xfrm_replay_recheck_esn(struct xfrm_state *x,
+static int xfrm_replay_recheck_esn(struct xfrm_sub_state *sx,
 				   struct sk_buff *skb, __be32 net_seq)
 {
 	if (unlikely(XFRM_SKB_CB(skb)->seq.input.hi !=
-		     htonl(xfrm_replay_seqhi(x, net_seq)))) {
-			x->stats.replay_window++;
+		     htonl(xfrm_replay_seqhi(sx, net_seq)))) {
+			sx->stats.replay_window++;
 			return -EINVAL;
 	}
 
-	return xfrm_replay_check_esn(x, skb, net_seq);
+	return xfrm_replay_check_esn(sx, skb, net_seq);
 }
 
-int xfrm_replay_recheck(struct xfrm_state *x,
+int xfrm_replay_recheck(struct xfrm_state *x, struct xfrm_sub_state *sx,
 			struct sk_buff *skb, __be32 net_seq)
 {
 	switch (x->repl_mode) {
@@ -542,27 +586,27 @@ int xfrm_replay_recheck(struct xfrm_state *x,
 		break;
 	case XFRM_REPLAY_MODE_BMP:
 		/* no special recheck treatment */
-		return xfrm_replay_check_bmp(x, skb, net_seq);
+		return xfrm_replay_check_bmp(sx, skb, net_seq);
 	case XFRM_REPLAY_MODE_ESN:
-		return xfrm_replay_recheck_esn(x, skb, net_seq);
+		return xfrm_replay_recheck_esn(sx, skb, net_seq);
 	}
 
-	return xfrm_replay_check_legacy(x, skb, net_seq);
+	return xfrm_replay_check_legacy(x, sx, skb, net_seq);
 }
 
-static void xfrm_replay_advance_esn(struct xfrm_state *x, __be32 net_seq)
+static void xfrm_replay_advance_esn(struct xfrm_sub_state *sx, __be32 net_seq)
 {
 	unsigned int bitnr, nr, i;
 	int wrap;
 	u32 diff, pos, seq, seq_hi;
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = xfrm_replay_state_get(sx);
 
 	if (!replay_esn->replay_window)
 		return;
 
 	seq = ntohl(net_seq);
 	pos = (replay_esn->seq - 1) % replay_esn->replay_window;
-	seq_hi = xfrm_replay_seqhi(x, net_seq);
+	seq_hi = xfrm_replay_seqhi(sx, net_seq);
 	wrap = seq_hi - replay_esn->seq_hi;
 
 	if ((!wrap && seq > replay_esn->seq) || wrap > 0) {
@@ -598,26 +642,23 @@ static void xfrm_replay_advance_esn(struct xfrm_state *x, __be32 net_seq)
 			bitnr = replay_esn->replay_window - (diff - pos);
 	}
 
-	xfrm_dev_state_advance_esn(x);
-
 	nr = bitnr >> 5;
 	bitnr = bitnr & 0x1F;
 	replay_esn->bmp[nr] |= (1U << bitnr);
-
-	if (xfrm_aevent_is_on(xs_net(x)))
-		xfrm_replay_notify(x, XFRM_REPLAY_UPDATE);
 }
 
 #ifdef CONFIG_XFRM_OFFLOAD
-static int xfrm_replay_overflow_offload(struct xfrm_state *x, struct sk_buff *skb)
+static int xfrm_replay_overflow_offload(struct xfrm_state *x,
+					struct xfrm_sub_state *sx,
+					struct sk_buff *skb)
 {
 	int err = 0;
 	struct net *net = xs_net(x);
 	struct xfrm_offload *xo = xfrm_offload(skb);
-	__u32 oseq = x->replay.oseq;
+	__u32 oseq = sx->replay.oseq;
 
 	if (!xo)
-		return __xfrm_replay_overflow(x, skb);
+		return __xfrm_replay_overflow(x, sx, skb);
 
 	if (x->type->flags & XFRM_TYPE_REPLAY_PROT) {
 		if (!skb_is_gso(skb)) {
@@ -631,7 +672,7 @@ static int xfrm_replay_overflow_offload(struct xfrm_state *x, struct sk_buff *sk
 
 		XFRM_SKB_CB(skb)->seq.output.hi = 0;
 		xo->seq.hi = 0;
-		if (unlikely(oseq < x->replay.oseq) &&
+		if (unlikely(oseq < sx->replay.oseq) &&
 		    !(x->props.extra_flags & XFRM_SA_XFLAG_OSEQ_MAY_WRAP)) {
 			xfrm_audit_state_replay_overflow(x, skb);
 			err = -EOVERFLOW;
@@ -639,7 +680,7 @@ static int xfrm_replay_overflow_offload(struct xfrm_state *x, struct sk_buff *sk
 			return err;
 		}
 
-		x->replay.oseq = oseq;
+		sx->replay.oseq = oseq;
 
 		if (xfrm_aevent_is_on(net))
 			xfrm_replay_notify(x, XFRM_REPLAY_UPDATE);
@@ -648,16 +689,18 @@ static int xfrm_replay_overflow_offload(struct xfrm_state *x, struct sk_buff *sk
 	return err;
 }
 
-static int xfrm_replay_overflow_offload_bmp(struct xfrm_state *x, struct sk_buff *skb)
+static int xfrm_replay_overflow_offload_bmp(struct xfrm_state *x,
+					    struct xfrm_sub_state *sx,
+					    struct sk_buff *skb)
 {
 	int err = 0;
 	struct xfrm_offload *xo = xfrm_offload(skb);
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = xfrm_replay_state_get(sx);
 	struct net *net = xs_net(x);
 	__u32 oseq = replay_esn->oseq;
 
 	if (!xo)
-		return xfrm_replay_overflow_bmp(x, skb);
+		return xfrm_replay_overflow_bmp(x, sx, skb);
 
 	if (x->type->flags & XFRM_TYPE_REPLAY_PROT) {
 		if (!skb_is_gso(skb)) {
@@ -688,17 +731,17 @@ static int xfrm_replay_overflow_offload_bmp(struct xfrm_state *x, struct sk_buff
 	return err;
 }
 
-static int xfrm_replay_overflow_offload_esn(struct xfrm_state *x, struct sk_buff *skb)
+static int xfrm_replay_overflow_offload_esn(struct xfrm_state *x, struct xfrm_sub_state *sx, struct sk_buff *skb)
 {
 	int err = 0;
 	struct xfrm_offload *xo = xfrm_offload(skb);
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn = xfrm_replay_state_get(sx);
 	struct net *net = xs_net(x);
 	__u32 oseq = replay_esn->oseq;
 	__u32 oseq_hi = replay_esn->oseq_hi;
 
 	if (!xo)
-		return xfrm_replay_overflow_esn(x, skb);
+		return xfrm_replay_overflow_esn(x, sx, skb);
 
 	if (x->type->flags & XFRM_TYPE_REPLAY_PROT) {
 		if (!skb_is_gso(skb)) {
@@ -740,39 +783,49 @@ static int xfrm_replay_overflow_offload_esn(struct xfrm_state *x, struct sk_buff
 	return err;
 }
 
-int xfrm_replay_overflow(struct xfrm_state *x, struct sk_buff *skb)
+int xfrm_replay_overflow(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			 struct sk_buff *skb)
 {
 	switch (x->repl_mode) {
 	case XFRM_REPLAY_MODE_LEGACY:
 		break;
 	case XFRM_REPLAY_MODE_BMP:
-		return xfrm_replay_overflow_offload_bmp(x, skb);
+		return xfrm_replay_overflow_offload_bmp(x, sx, skb);
 	case XFRM_REPLAY_MODE_ESN:
-		return xfrm_replay_overflow_offload_esn(x, skb);
+		return xfrm_replay_overflow_offload_esn(x, sx, skb);
 	}
 
-	return xfrm_replay_overflow_offload(x, skb);
+	return xfrm_replay_overflow_offload(x, sx, skb);
 }
 #else
-int xfrm_replay_overflow(struct xfrm_state *x, struct sk_buff *skb)
+int xfrm_replay_overflow(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			 struct sk_buff *skb)
 {
 	switch (x->repl_mode) {
 	case XFRM_REPLAY_MODE_LEGACY:
 		break;
 	case XFRM_REPLAY_MODE_BMP:
-		return xfrm_replay_overflow_bmp(x, skb);
+		return xfrm_replay_overflow_bmp(x, sx, skb);
 	case XFRM_REPLAY_MODE_ESN:
-		return xfrm_replay_overflow_esn(x, skb);
+		return xfrm_replay_overflow_esn(x, sx, skb);
 	}
 
-	return __xfrm_replay_overflow(x, skb);
+	return __xfrm_replay_overflow(x, sx, skb);
 }
 #endif
 
-int xfrm_init_replay(struct xfrm_state *x, struct netlink_ext_ack *extack)
+static int __xfrm_init_replay(struct xfrm_state *x, struct xfrm_sub_state *sx,
+			      struct netlink_ext_ack *extack)
 {
-	struct xfrm_replay_state_esn *replay_esn = x->replay_esn;
+	struct xfrm_replay_state_esn *replay_esn;
 
+	if (!sx)
+		return -ENOENT;
+
+	replay_esn = xfrm_replay_state_get(sx);
+
+	/* replay_esn is initialized identically for each sub state, so we
+	 * just take one from the local cpu for the saintity checks. */
 	if (replay_esn) {
 		if (replay_esn->replay_window >
 		    replay_esn->bmp_len * sizeof(__u32) * 8) {
@@ -795,5 +848,17 @@ int xfrm_init_replay(struct xfrm_state *x, struct netlink_ext_ack *extack)
 	}
 
 	return 0;
+}
+
+int xfrm_init_replay(struct xfrm_state *x, struct netlink_ext_ack *extack)
+{
+	struct xfrm_sub_state *sx;
+	int err;
+
+	xfrm_sub_state_lock_bh(x);
+	sx = xfrm_sub_state_get(x);
+	err = __xfrm_init_replay(x, sx, extack);
+	xfrm_sub_state_unlock_bh(x);
+	return err;
 }
 EXPORT_SYMBOL(xfrm_init_replay);

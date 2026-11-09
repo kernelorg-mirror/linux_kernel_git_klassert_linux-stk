@@ -120,13 +120,17 @@ static int mip6_destopt_input(struct xfrm_state *x, struct sk_buff *skb)
 {
 	const struct ipv6hdr *iph = ipv6_hdr(skb);
 	struct ipv6_destopt_hdr *destopt = (struct ipv6_destopt_hdr *)skb->data;
-	int err = destopt->nexthdr;
+	int err;
+	unsigned int seq;
 
-	spin_lock(&x->lock);
-	if (!ipv6_addr_equal(&iph->saddr, (struct in6_addr *)x->coaddr) &&
-	    !ipv6_addr_any((struct in6_addr *)x->coaddr))
-		err = -ENOENT;
-	spin_unlock(&x->lock);
+	do {
+		seq = read_seqbegin(&x->slock);
+		err = destopt->nexthdr;
+
+		if (!ipv6_addr_equal(&iph->saddr, (struct in6_addr *)x->coaddr) &&
+		    !ipv6_addr_any((struct in6_addr *)x->coaddr))
+			err = -ENOENT;
+	} while (read_seqretry(&x->slock, seq));
 
 	return err;
 }
@@ -137,9 +141,11 @@ static int mip6_destopt_input(struct xfrm_state *x, struct sk_buff *skb)
  */
 static int mip6_destopt_output(struct xfrm_state *x, struct sk_buff *skb)
 {
+	struct in6_addr coaddr;
 	struct ipv6hdr *iph;
 	struct ipv6_destopt_hdr *dstopt;
 	struct ipv6_destopt_hao *hao;
+	unsigned int seq;
 	u8 nexthdr;
 	int len;
 
@@ -162,9 +168,13 @@ static int mip6_destopt_output(struct xfrm_state *x, struct sk_buff *skb)
 	len = ((char *)hao - (char *)dstopt) + sizeof(*hao);
 
 	memcpy(&hao->addr, &iph->saddr, sizeof(hao->addr));
-	spin_lock_bh(&x->lock);
-	memcpy(&iph->saddr, x->coaddr, sizeof(iph->saddr));
-	spin_unlock_bh(&x->lock);
+
+	do {
+		seq = read_seqbegin(&x->slock);
+
+		memcpy(&coaddr, x->coaddr, sizeof(coaddr));
+	} while (read_seqretry(&x->slock, seq));
+	memcpy(&iph->saddr, &coaddr, sizeof(coaddr));
 
 	WARN_ON(len != x->props.header_len);
 	dstopt->hdrlen = (x->props.header_len >> 3) - 1;
@@ -289,13 +299,17 @@ static int mip6_rthdr_input(struct xfrm_state *x, struct sk_buff *skb)
 {
 	const struct ipv6hdr *iph = ipv6_hdr(skb);
 	struct rt2_hdr *rt2 = (struct rt2_hdr *)skb->data;
-	int err = rt2->rt_hdr.nexthdr;
+	int err;
+	unsigned int seq;
 
-	spin_lock(&x->lock);
-	if (!ipv6_addr_equal(&iph->daddr, (struct in6_addr *)x->coaddr) &&
-	    !ipv6_addr_any((struct in6_addr *)x->coaddr))
-		err = -ENOENT;
-	spin_unlock(&x->lock);
+	do {
+		seq = read_seqbegin(&x->slock);
+		err = rt2->rt_hdr.nexthdr;
+
+		if (!ipv6_addr_equal(&iph->daddr, (struct in6_addr *)x->coaddr) &&
+		    !ipv6_addr_any((struct in6_addr *)x->coaddr))
+			err = -ENOENT;
+	} while (read_seqretry(&x->slock, seq));
 
 	return err;
 }
@@ -305,8 +319,10 @@ static int mip6_rthdr_input(struct xfrm_state *x, struct sk_buff *skb)
  */
 static int mip6_rthdr_output(struct xfrm_state *x, struct sk_buff *skb)
 {
+	struct in6_addr coaddr;
 	struct ipv6hdr *iph;
 	struct rt2_hdr *rt2;
+	unsigned int seq;
 	u8 nexthdr;
 
 	skb_push(skb, -skb_network_offset(skb));
@@ -325,9 +341,13 @@ static int mip6_rthdr_output(struct xfrm_state *x, struct sk_buff *skb)
 	WARN_ON(rt2->rt_hdr.hdrlen != 2);
 
 	memcpy(&rt2->addr, &iph->daddr, sizeof(rt2->addr));
-	spin_lock_bh(&x->lock);
-	memcpy(&iph->daddr, x->coaddr, sizeof(iph->daddr));
-	spin_unlock_bh(&x->lock);
+
+
+	do {
+		seq = read_seqbegin(&x->slock);
+		memcpy(&coaddr, x->coaddr, sizeof(coaddr));
+	} while (read_seqretry(&x->slock, seq));
+	memcpy(&iph->daddr, &coaddr, sizeof(coaddr));
 
 	return 0;
 }

@@ -312,12 +312,13 @@ static void mlx5e_ipsec_aso_update(struct mlx5e_ipsec_sa_entry *sa_entry,
 	mlx5e_ipsec_aso_query(sa_entry, data);
 }
 
-static void
+static int
 mlx5e_ipsec_update_esn_state(struct mlx5e_ipsec_sa_entry *sa_entry,
 			     u32 mode_param,
 			     struct mlx5_accel_esp_xfrm_attrs *attrs)
 {
 	struct mlx5_wqe_aso_ctrl_seg data = {};
+	int err;
 
 	if (mode_param < MLX5E_IPSEC_ESN_SCOPE_MID) {
 		sa_entry->esn_state.esn_msb++;
@@ -326,7 +327,9 @@ mlx5e_ipsec_update_esn_state(struct mlx5e_ipsec_sa_entry *sa_entry,
 		sa_entry->esn_state.overlap = 1;
 	}
 
-	mlx5e_ipsec_build_accel_xfrm_attrs(sa_entry, attrs);
+	err = mlx5e_ipsec_build_accel_xfrm_attrs(sa_entry, attrs);
+	if (err)
+		return err;
 
 	data.data_offset_condition_operand =
 		MLX5_IPSEC_ASO_REMOVE_FLOW_PKT_CNT_OFFSET;
@@ -334,6 +337,8 @@ mlx5e_ipsec_update_esn_state(struct mlx5e_ipsec_sa_entry *sa_entry,
 	data.data_mask = data.bitwise_data;
 
 	mlx5e_ipsec_aso_update(sa_entry, &data);
+
+	return 0;
 }
 
 static void mlx5e_ipsec_aso_update_hard(struct mlx5e_ipsec_sa_entry *sa_entry)
@@ -362,6 +367,7 @@ static void mlx5e_ipsec_aso_update_soft(struct mlx5e_ipsec_sa_entry *sa_entry,
 static void mlx5e_ipsec_handle_limits(struct mlx5e_ipsec_sa_entry *sa_entry)
 {
 	struct mlx5_accel_esp_xfrm_attrs *attrs = &sa_entry->attrs;
+	struct xfrm_sub_state *sx;
 	bool soft_arm, hard_arm;
 	u64 hard_cnt;
 
@@ -371,6 +377,10 @@ static void mlx5e_ipsec_handle_limits(struct mlx5e_ipsec_sa_entry *sa_entry)
 	hard_arm = !MLX5_GET(ipsec_aso, sa_entry->ctx, hard_lft_arm);
 	if (!soft_arm && !hard_arm)
 		/* It is not lifetime event */
+		return;
+
+	sx = xfrm_sub_state_get(sa_entry->x);
+	if (!sx)
 		return;
 
 	hard_cnt = MLX5_GET(ipsec_aso, sa_entry->ctx, remove_flow_pkt_cnt);
@@ -385,7 +395,7 @@ static void mlx5e_ipsec_handle_limits(struct mlx5e_ipsec_sa_entry *sa_entry)
 		WARN_ON_ONCE(hard_arm && hard_cnt);
 
 		/* Notify about hard limit */
-		xfrm_state_check_expire(sa_entry->x);
+		xfrm_state_check_expire(sa_entry->x, sx);
 		return;
 	}
 
@@ -394,7 +404,7 @@ static void mlx5e_ipsec_handle_limits(struct mlx5e_ipsec_sa_entry *sa_entry)
 	    sa_entry->limits.round == attrs->lft.numb_rounds_soft) {
 		sa_entry->limits.soft_limit_hit = true;
 		/* Notify about soft limit */
-		xfrm_state_check_expire(sa_entry->x);
+		xfrm_state_check_expire(sa_entry->x, sx);
 
 		if (sa_entry->limits.round == attrs->lft.numb_rounds_hard)
 			goto hard;
@@ -450,7 +460,8 @@ static void mlx5e_ipsec_handle_event(struct work_struct *_work)
 
 	attrs = &sa_entry->attrs;
 
-	spin_lock_bh(&sa_entry->x->lock);
+	xfrm_dev_state_update_stats(sa_entry->x);
+	xfrm_sub_state_lock_bh(sa_entry->x);
 	ret = mlx5e_ipsec_aso_query(sa_entry, NULL);
 	if (ret)
 		goto unlock;
@@ -463,12 +474,12 @@ static void mlx5e_ipsec_handle_event(struct work_struct *_work)
 		u32 mode_param = MLX5_GET(ipsec_aso, sa_entry->ctx,
 					  mode_parameter);
 
-		mlx5e_ipsec_update_esn_state(sa_entry, mode_param, &tmp);
-		need_modify = true;
+		ret = mlx5e_ipsec_update_esn_state(sa_entry, mode_param, &tmp);
+		need_modify = !ret;
 	}
 
 unlock:
-	spin_unlock_bh(&sa_entry->x->lock);
+	xfrm_sub_state_unlock_bh(sa_entry->x);
 	if (need_modify)
 		mlx5_accel_esp_modify_xfrm(sa_entry, &tmp);
 	kfree(work);

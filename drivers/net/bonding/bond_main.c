@@ -550,7 +550,7 @@ static void bond_ipsec_add_sa_all(struct bonding *bond)
 			continue;
 		}
 
-		spin_lock_bh(&ipsec->xs->lock);
+		write_seqlock_bh(&ipsec->xs->slock);
 		/* xs might have been killed by the user during the migration
 		 * to the new dev, but bond_ipsec_del_sa() should have done
 		 * nothing, as xso.real_dev is NULL.
@@ -562,7 +562,7 @@ static void bond_ipsec_add_sa_all(struct bonding *bond)
 			real_dev->xfrmdev_ops->xdo_dev_state_delete(real_dev,
 								    ipsec->xs);
 		ipsec->xs->xso.real_dev = real_dev;
-		spin_unlock_bh(&ipsec->xs->lock);
+		write_sequnlock_bh(&ipsec->xs->slock);
 	}
 out:
 	mutex_unlock(&bond->ipsec_lock);
@@ -619,13 +619,13 @@ static void bond_ipsec_del_sa_all(struct bonding *bond)
 			continue;
 		}
 
-		spin_lock_bh(&ipsec->xs->lock);
+		write_seqlock_bh(&ipsec->xs->slock);
 		ipsec->xs->xso.real_dev = NULL;
 		/* Don't double delete states killed by the user. */
 		if (ipsec->xs->km.state != XFRM_STATE_DEAD)
 			real_dev->xfrmdev_ops->xdo_dev_state_delete(real_dev,
 								    ipsec->xs);
-		spin_unlock_bh(&ipsec->xs->lock);
+		write_sequnlock_bh(&ipsec->xs->slock);
 
 		if (real_dev->xfrmdev_ops->xdo_dev_state_free)
 			real_dev->xfrmdev_ops->xdo_dev_state_free(real_dev,

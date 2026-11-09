@@ -782,6 +782,7 @@ static inline int xfrm_replay_verify_len(struct xfrm_replay_state_esn *replay_es
 	return 0;
 }
 
+/*
 static int xfrm_alloc_replay_state_esn(struct xfrm_replay_state_esn **replay_esn,
 				       struct xfrm_replay_state_esn **preplay_esn,
 				       struct nlattr *rta)
@@ -814,6 +815,7 @@ static int xfrm_alloc_replay_state_esn(struct xfrm_replay_state_esn **replay_esn
 
 	return 0;
 }
+*/
 
 static inline unsigned int xfrm_user_sec_ctx_size(struct xfrm_sec_ctx *xfrm_ctx)
 {
@@ -830,10 +832,10 @@ static void copy_from_user_state(struct xfrm_state *x, struct xfrm_usersa_info *
 {
 	memcpy(&x->id, &p->id, sizeof(x->id));
 	memcpy(&x->sel, &p->sel, sizeof(x->sel));
-	memcpy(&x->lft, &p->lft, sizeof(x->lft));
+	x->lft = p->lft;
 	x->props.mode = p->mode;
 	x->props.replay_window = min_t(unsigned int, p->replay_window,
-					sizeof(x->replay.bitmap) * 8);
+					sizeof_field(struct xfrm_replay_state, bitmap) * 8);
 	x->props.reqid = p->reqid;
 	x->props.family = p->family;
 	memcpy(&x->props.saddr, &p->saddr, sizeof(x->props.saddr));
@@ -848,9 +850,14 @@ static void copy_from_user_state(struct xfrm_state *x, struct xfrm_usersa_info *
  * somehow made shareable and move it to xfrm_state.c - JHS
  *
 */
-static void xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
-				  int update_esn)
+static int xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
+				 int update_esn)
 {
+	struct xfrm_sub_state *sx;
+	struct xfrm_replay_state_esn *replay_esn, *p, *pp;
+	struct xfrm_sub_state_rcu *rsx;
+	struct xfrm_lifetime_cur *ltime;
+	struct xfrm_replay_state *replay;
 	struct nlattr *rp = attrs[XFRMA_REPLAY_VAL];
 	struct nlattr *re = update_esn ? attrs[XFRMA_REPLAY_ESN_VAL] : NULL;
 	struct nlattr *lt = attrs[XFRMA_LTIME_VAL];
@@ -858,29 +865,41 @@ static void xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
 	struct nlattr *rt = attrs[XFRMA_REPLAY_THRESH];
 	struct nlattr *mt = attrs[XFRMA_MTIMER_THRESH];
 
-	if (re && x->replay_esn && x->preplay_esn) {
-		struct xfrm_replay_state_esn *replay_esn;
-		replay_esn = nla_data(re);
-		memcpy(x->replay_esn, replay_esn,
-		       xfrm_replay_state_esn_len(replay_esn));
-		memcpy(x->preplay_esn, replay_esn,
-		       xfrm_replay_state_esn_len(replay_esn));
-	}
+	lockdep_assert_held(&x->lock);
+	rsx = rcu_dereference_check(x->rsx, lockdep_is_held(&x->lock));
+	if (!rsx)
+		return -ENOENT;
 
-	if (rp) {
-		struct xfrm_replay_state *replay;
-		replay = nla_data(rp);
-		memcpy(&x->replay, replay, sizeof(*replay));
-		memcpy(&x->preplay, replay, sizeof(*replay));
+	if (re) {
+		replay_esn = nla_data(re);
+
+		sx = rsx->sx;
+		p = xfrm_replay_state_get(sx);
+		pp = xfrm_preplay_state_get(sx);
+
+		memcpy(p, replay_esn,
+		       xfrm_replay_state_esn_len(replay_esn));
+		memcpy(pp, replay_esn,
+		       xfrm_replay_state_esn_len(replay_esn));
 	}
 
 	if (lt) {
-		struct xfrm_lifetime_cur *ltime;
 		ltime = nla_data(lt);
-		x->curlft.bytes = ltime->bytes;
-		x->curlft.packets = ltime->packets;
+
+		sx = rsx->sx;
+		sx->curlbt.bytes = ltime->bytes;
+		sx->curlbt.packets = ltime->packets;
+
 		x->curlft.add_time = ltime->add_time;
 		x->curlft.use_time = ltime->use_time;
+	}
+
+	if (rp) {
+		replay = nla_data(rp);
+
+		sx = rsx->sx;
+		sx->replay = *replay;
+		sx->preplay = *replay;
 	}
 
 	if (et)
@@ -891,6 +910,8 @@ static void xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
 
 	if (mt)
 		x->mapping_maxage = nla_get_u32(mt);
+
+	return 0;
 }
 
 static void xfrm_smark_init(struct nlattr **attrs, struct xfrm_mark *m)
@@ -995,20 +1016,25 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 			goto error;
 	}
 
-	if ((err = xfrm_alloc_replay_state_esn(&x->replay_esn, &x->preplay_esn,
-					       attrs[XFRMA_REPLAY_ESN_VAL])))
+	err = xfrm_sub_state_alloc(x, attrs[XFRMA_REPLAY_ESN_VAL]);
+	if (err)
 		goto error;
 
 	x->km.seq = p->seq;
 	x->replay_maxdiff = net->xfrm.sysctl_aevent_rseqth;
 	/* sysctl_xfrm_aevent_etime is in 100ms units */
-	x->replay_maxage = (net->xfrm.sysctl_aevent_etime*HZ)/XFRM_AE_ETH_M;
+	x->replay_maxage =
+		(net->xfrm.sysctl_aevent_etime * HZ) / XFRM_AE_ETH_M;
 
 	if ((err = xfrm_init_replay(x, extack)))
 		goto error;
 
 	/* override default values from above */
-	xfrm_update_ae_params(x, attrs, 0);
+	xfrm_sub_state_lock_bh(x);
+	err = xfrm_update_ae_params(x, attrs, 0);
+	xfrm_sub_state_unlock_bh(x);
+	if (err)
+		goto error;
 
 	xfrm_set_type_offload(x, attrs[XFRMA_OFFLOAD_DEV]);
 	/* configure the hardware if offload is requested */
@@ -1152,18 +1178,30 @@ out:
 	return err;
 }
 
-static void copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
+static int copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
 {
+	struct xfrm_sub_state *sx;
+	int err = 0;
+
+	lockdep_assert_held(&x->lock);
+	sx = xfrm_sub_state_get(x);
+
+	if (!sx) {
+		err = -ENOENT;
+		goto out;
+	}
+
 	memset(p, 0, sizeof(*p));
 	memcpy(&p->id, &x->id, sizeof(p->id));
 	memcpy(&p->sel, &x->sel, sizeof(p->sel));
 	memcpy(&p->lft, &x->lft, sizeof(p->lft));
-	if (x->xso.dev)
-		xfrm_dev_state_update_stats(x);
-	memcpy(&p->curlft, &x->curlft, sizeof(p->curlft));
-	put_unaligned(x->stats.replay_window, &p->stats.replay_window);
-	put_unaligned(x->stats.replay, &p->stats.replay);
-	put_unaligned(x->stats.integrity_failed, &p->stats.integrity_failed);
+	p->curlft.bytes = sx->curlbt.bytes;
+	p->curlft.packets = sx->curlbt.packets;
+	p->curlft.add_time = x->curlft.add_time;
+	p->curlft.use_time = x->curlft.use_time;
+	put_unaligned(sx->stats.replay_window, &p->stats.replay_window);
+	put_unaligned(sx->stats.replay, &p->stats.replay);
+	put_unaligned(sx->stats.integrity_failed, &p->stats.integrity_failed);
 	memcpy(&p->saddr, &x->props.saddr, sizeof(p->saddr));
 	p->mode = x->props.mode;
 	p->replay_window = x->props.replay_window;
@@ -1171,6 +1209,9 @@ static void copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
 	p->family = x->props.family;
 	p->flags = x->props.flags;
 	p->seq = x->km.seq;
+
+out:
+	return err;
 }
 
 struct xfrm_dump_info {
@@ -1384,9 +1425,19 @@ static int copy_to_user_state_extra(struct xfrm_state *x,
 				    struct xfrm_usersa_info *p,
 				    struct sk_buff *skb)
 {
+	struct xfrm_sub_state *sx;
 	int ret = 0;
 
-	copy_to_user_state(x, p);
+	xfrm_dev_state_update_stats(x);
+	sx = xfrm_sub_state_get(x);
+	if (!sx) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	ret = copy_to_user_state(x, p);
+	if (ret)
+		goto out;
 
 	if (x->props.extra_flags) {
 		ret = nla_put_u32(skb, XFRMA_SA_EXTRA_FLAGS,
@@ -1400,8 +1451,8 @@ static int copy_to_user_state_extra(struct xfrm_state *x,
 		if (ret)
 			goto out;
 	}
-	if (x->lastused) {
-		ret = nla_put_u64_64bit(skb, XFRMA_LASTUSED, x->lastused,
+	if (sx->lastused) {
+		ret = nla_put_u64_64bit(skb, XFRMA_LASTUSED, sx->lastused,
 					XFRMA_PAD);
 		if (ret)
 			goto out;
@@ -1444,13 +1495,13 @@ static int copy_to_user_state_extra(struct xfrm_state *x,
 	if (ret)
 		goto out;
 
-	if (x->replay_esn)
+	if (x->repl_mode != XFRM_REPLAY_MODE_LEGACY)
 		ret = nla_put(skb, XFRMA_REPLAY_ESN_VAL,
-			      xfrm_replay_state_esn_len(x->replay_esn),
-			      x->replay_esn);
+			      xfrm_replay_state_esn_len(sx->replay_esn),
+			      sx->replay_esn);
 	else
-		ret = nla_put(skb, XFRMA_REPLAY_VAL, sizeof(x->replay),
-			      &x->replay);
+		ret = nla_put(skb, XFRMA_REPLAY_VAL, sizeof(sx->replay),
+			      &sx->replay);
 	if (ret)
 		goto out;
 	if (READ_ONCE(x->xso.dev))
@@ -1511,7 +1562,9 @@ static int dump_one_state(struct xfrm_state *x, int count, void *ptr)
 
 	p = nlmsg_data(nlh);
 
+	xfrm_sub_state_lock_bh(x);
 	err = copy_to_user_state_extra(x, p, skb);
+	xfrm_sub_state_unlock_bh(x);
 	if (err) {
 		nlmsg_cancel(skb, nlh);
 		return err;
@@ -2699,11 +2752,16 @@ static int xfrm_flush_sa(struct sk_buff *skb, struct nlmsghdr *nlh,
 
 static inline unsigned int xfrm_aevent_msgsize(struct xfrm_state *x)
 {
-	unsigned int replay_size = x->replay_esn ?
-			      xfrm_replay_state_esn_len(x->replay_esn) :
+	struct xfrm_sub_state *sx;
+	unsigned int replay_size, size;
+
+	lockdep_assert_held(&x->lock);
+	sx = xfrm_sub_state_get(x);
+	replay_size = sx && x->repl_mode != XFRM_REPLAY_MODE_LEGACY ?
+			      xfrm_replay_state_esn_len(sx->replay_esn) :
 			      sizeof(struct xfrm_replay_state);
 
-	return NLMSG_ALIGN(sizeof(struct xfrm_aevent_id))
+	size = NLMSG_ALIGN(sizeof(struct xfrm_aevent_id))
 	       + nla_total_size(replay_size)
 	       + nla_total_size_64bit(sizeof(struct xfrm_lifetime_cur))
 	       + nla_total_size(sizeof(struct xfrm_mark))
@@ -2712,39 +2770,79 @@ static inline unsigned int xfrm_aevent_msgsize(struct xfrm_state *x)
 	       + nla_total_size(sizeof(x->dir)) /* XFRMA_SA_DIR */
 	       + nla_total_size(4) /* XFRMA_SA_PCPU */
 	       + nla_total_size(sizeof(x->if_id)); /* XFRMA_IF_ID */
+	return size;
 }
 
 static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct km_event *c)
 {
+	struct xfrm_sub_state *sx;
+	struct xfrm_lifetime_cur curlft;
+	struct xfrm_replay_state replay;
 	struct xfrm_aevent_id *id;
 	struct nlmsghdr *nlh;
+	unsigned int seq;
 	int err;
 
+	lockdep_assert_held(&x->lock);
+
 	nlh = nlmsg_put(skb, c->portid, c->seq, XFRM_MSG_NEWAE, sizeof(*id), 0);
-	if (nlh == NULL)
-		return -EMSGSIZE;
+	if (!nlh) {
+		err = -EMSGSIZE;
+		goto out;
+	}
 
 	id = nlmsg_data(nlh);
 	memset(&id->sa_id, 0, sizeof(id->sa_id));
-	memcpy(&id->sa_id.daddr, &x->id.daddr, sizeof(x->id.daddr));
-	id->sa_id.spi = x->id.spi;
-	id->sa_id.family = x->props.family;
-	id->sa_id.proto = x->id.proto;
-	memcpy(&id->saddr, &x->props.saddr, sizeof(x->props.saddr));
-	id->reqid = x->props.reqid;
-	id->flags = c->data.aevent;
 
-	if (x->replay_esn) {
-		err = nla_put(skb, XFRMA_REPLAY_ESN_VAL,
-			      xfrm_replay_state_esn_len(x->replay_esn),
-			      x->replay_esn);
+	/*
+	 * Take a snapshot of the sub-state. It is protected by the state
+	 * lock that the caller already holds.
+	 */
+	sx = xfrm_sub_state_get(x);
+	if (!sx) {
+		err = -ENOENT;
+		goto out_cancel;
+	}
+
+	do {
+		seq = read_seqbegin(&x->slock);
+
+		memcpy(&id->sa_id.daddr, &x->id.daddr, sizeof(x->id.daddr));
+		memcpy(&replay, &sx->replay, sizeof(replay));
+		id->sa_id.spi = x->id.spi;
+		id->sa_id.family = x->props.family;
+		id->sa_id.proto = x->id.proto;
+		memcpy(&id->saddr, &x->props.saddr, sizeof(x->props.saddr));
+		id->reqid = x->props.reqid;
+		id->flags = c->data.aevent;
+
+		curlft.bytes = sx->curlbt.bytes;
+		curlft.packets = sx->curlbt.packets;
+		curlft.use_time = x->curlft.use_time;
+		curlft.add_time = x->curlft.add_time;
+	} while (read_seqretry(&x->slock, seq));
+
+	if (x->repl_mode != XFRM_REPLAY_MODE_LEGACY) {
+		struct xfrm_replay_state_esn *replay_esn;
+
+		replay_esn = xfrm_replay_state_get(sx);
+		if (replay_esn) {
+			err = nla_put(skb, XFRMA_REPLAY_ESN_VAL,
+				      xfrm_replay_state_esn_len(replay_esn),
+				      replay_esn);
+		} else {
+			/* No ESN replay state, report the legacy one. */
+			err = nla_put(skb, XFRMA_REPLAY_VAL, sizeof(replay),
+				      &replay);
+		}
 	} else {
-		err = nla_put(skb, XFRMA_REPLAY_VAL, sizeof(x->replay),
-			      &x->replay);
+		err = nla_put(skb, XFRMA_REPLAY_VAL, sizeof(replay),
+			      &replay);
 	}
 	if (err)
 		goto out_cancel;
-	err = nla_put_64bit(skb, XFRMA_LTIME_VAL, sizeof(x->curlft), &x->curlft,
+
+	err = nla_put_64bit(skb, XFRMA_LTIME_VAL, sizeof(curlft), &curlft,
 			    XFRMA_PAD);
 	if (err)
 		goto out_cancel;
@@ -2780,10 +2878,12 @@ static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct 
 	}
 
 	nlmsg_end(skb, nlh);
-	return 0;
+	err = 0;
+	goto out;
 
 out_cancel:
 	nlmsg_cancel(skb, nlh);
+out:
 	return err;
 }
 
@@ -2806,32 +2906,29 @@ static int xfrm_get_ae(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (x == NULL)
 		return -ESRCH;
 
+	xfrm_sub_state_lock_bh(x);
 	r_skb = nlmsg_new(xfrm_aevent_msgsize(x), GFP_ATOMIC);
 	if (r_skb == NULL) {
+		xfrm_sub_state_unlock_bh(x);
 		xfrm_state_put(x);
 		return -ENOMEM;
 	}
 
-	/*
-	 * XXX: is this lock really needed - none of the other
-	 * gets lock (the concern is things getting updated
-	 * while we are still reading) - jhs
-	*/
-	spin_lock_bh(&x->lock);
+
 	c.data.aevent = p->flags;
 	c.seq = nlh->nlmsg_seq;
 	c.portid = nlh->nlmsg_pid;
 
 	err = build_aevent(r_skb, x, &c);
+	xfrm_sub_state_unlock_bh(x);
 	if (err < 0) {
-		spin_unlock_bh(&x->lock);
 		xfrm_state_put(x);
 		kfree_skb(r_skb);
 		return err;
 	}
 
 	err = nlmsg_unicast(xfrm_net_nlsk(net, skb), r_skb, NETLINK_CB(skb).portid);
-	spin_unlock_bh(&x->lock);
+
 	xfrm_state_put(x);
 	return err;
 }
@@ -2841,6 +2938,7 @@ static int xfrm_new_ae(struct sk_buff *skb, struct nlmsghdr *nlh,
 {
 	struct net *net = sock_net(skb->sk);
 	struct xfrm_state *x;
+	struct xfrm_sub_state *sx;
 	struct km_event c;
 	int err = -EINVAL;
 	u32 mark = 0;
@@ -2869,24 +2967,41 @@ static int xfrm_new_ae(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (x == NULL)
 		return -ESRCH;
 
-	if (x->km.state != XFRM_STATE_VALID) {
-		NL_SET_ERR_MSG(extack, "SA must be in VALID state");
-		goto out;
-	}
+	xfrm_sub_state_lock_bh(x);
+	sx = xfrm_sub_state_get(x);
 
-	err = xfrm_replay_verify_len(x->replay_esn, re, extack);
+	if (sx)
+		err = xfrm_replay_verify_len(sx->replay_esn, re, extack);
+	else
+		err = -ENOENT;
+	xfrm_sub_state_unlock_bh(x);
 	if (err)
 		goto out;
 
-	spin_lock_bh(&x->lock);
-	xfrm_update_ae_params(x, attrs, 1);
-	spin_unlock_bh(&x->lock);
+	xfrm_sub_state_lock_bh(x);
+	write_seqlock(&x->slock);
+	if (x->km.state != XFRM_STATE_VALID) {
+		NL_SET_ERR_MSG(extack, "SA must be in VALID state");
+		err = -EINVAL;
+	} else {
+		err = xfrm_update_ae_params(x, attrs, 1);
+	}
+	/* Notifications read slock; retain replay serialization but finish
+	 * the sequence write before invoking the synchronous callbacks.
+	 */
+	write_sequnlock(&x->slock);
+	if (err) {
+		xfrm_sub_state_unlock_bh(x);
+		goto out;
+	}
+
 
 	c.event = nlh->nlmsg_type;
 	c.seq = nlh->nlmsg_seq;
 	c.portid = nlh->nlmsg_pid;
 	c.data.aevent = XFRM_AE_CU;
 	km_state_notify(x, &c);
+	xfrm_sub_state_unlock_bh(x);
 	err = 0;
 out:
 	xfrm_state_put(x);
@@ -3007,22 +3122,43 @@ static int xfrm_add_sa_expire(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (x == NULL)
 		return err;
 
-	spin_lock_bh(&x->lock);
+
+	xfrm_sub_state_lock_bh(x);
+	write_seqlock(&x->slock);
 	err = -EINVAL;
 	if (x->km.state != XFRM_STATE_VALID) {
 		NL_SET_ERR_MSG(extack, "SA must be in VALID state");
-		goto out;
+		goto out_unlock;
 	}
 
 	km_state_expired(x, ue->hard, nlh->nlmsg_pid);
 
+	/* The global list lock is taken in
+	 * __xfrm_state_delete(). It must not be taken
+	 * while the state lock is held, so release the
+	 * state lock before the SA is deleted.
+	 *
+	 * The write seqlock stays held until the SA is
+	 * deleted, which is the order the expiry timer
+	 * uses. Do not enable the soft interrupts before
+	 * the write seqlock has been released, because the
+	 * expiry timer takes the write seqlock in softirq
+	 * context.
+	 */
+	xfrm_sub_state_unlock(x);
 	if (ue->hard) {
 		__xfrm_state_delete(x);
 		xfrm_audit_state_delete(x, 1, true);
 	}
 	err = 0;
-out:
-	spin_unlock_bh(&x->lock);
+	write_sequnlock(&x->slock);
+	local_bh_enable();
+	xfrm_state_put(x);
+	return err;
+
+out_unlock:
+	write_sequnlock(&x->slock);
+	xfrm_sub_state_unlock_bh(x);
 	xfrm_state_put(x);
 	return err;
 }
@@ -3467,26 +3603,9 @@ static int xfrm_do_migrate_state(struct sk_buff *skb, struct nlmsghdr *nlh,
 		goto out;
 	}
 
-	spin_lock_bh(&x->lock);
-	if (x->km.state != XFRM_STATE_VALID) {
-		spin_unlock_bh(&x->lock);
-		NL_SET_ERR_MSG(extack, "State already deleted");
-		err = -ESRCH;
-		goto out_xc;
-	}
-	xfrm_migrate_sync(xc, x); /* to prevent SN/IV reuse */
-	__xfrm_state_delete(x);
-	spin_unlock_bh(&x->lock);
-
 	err = xfrm_state_migrate_install(x, xc, &m, extack);
-	if (err < 0) {
-		/*
-		 * Should not occur: pre-check above ensures the new tuple is
-		 * free under xfrm_cfg_mutex. Both SAs are gone if it does;
-		 * restoring x would risk SN/IV reuse.
-		 */
+	if (err)
 		goto out;
-	}
 
 	/* Restore encap cleared by sentinel (type=0) during migration. */
 	if (attrs[XFRMA_ENCAP])
@@ -3504,11 +3623,6 @@ static int xfrm_do_migrate_state(struct sk_buff *skb, struct nlmsghdr *nlh,
 	}
 
 out:
-	xfrm_state_put(x);
-	return err;
-out_xc:
-	xc->km.state = XFRM_STATE_DEAD;
-	xfrm_state_put(xc);
 	xfrm_state_put(x);
 	return err;
 }
@@ -3941,7 +4055,11 @@ static int build_expire(struct sk_buff *skb, struct xfrm_state *x, const struct 
 		return -EMSGSIZE;
 
 	ue = nlmsg_data(nlh);
-	copy_to_user_state(x, &ue->state);
+	err = copy_to_user_state(x, &ue->state);
+	if (err) {
+		nlmsg_cancel(skb, nlh);
+		return err;
+	}
 	ue->hard = (c->data.hard != 0) ? 1 : 0;
 	/* clear the padding bytes */
 	memset_after(ue, 0, hard);
@@ -3973,14 +4091,16 @@ static int xfrm_exp_state_notify(struct xfrm_state *x, const struct km_event *c)
 {
 	struct net *net = xs_net(x);
 	struct sk_buff *skb;
+	int err;
 
 	skb = nlmsg_new(xfrm_expire_msgsize(), GFP_ATOMIC);
 	if (skb == NULL)
 		return -ENOMEM;
 
-	if (build_expire(skb, x, c) < 0) {
+	err = build_expire(skb, x, c);
+	if (err) {
 		kfree_skb(skb);
-		return -EMSGSIZE;
+		return err;
 	}
 
 	return xfrm_nlmsg_multicast(net, skb, 0, XFRMNLGRP_EXPIRE);
@@ -3997,7 +4117,10 @@ static int xfrm_aevent_state_notify(struct xfrm_state *x, const struct km_event 
 		return -ENOMEM;
 
 	err = build_aevent(skb, x, c);
-	BUG_ON(err < 0);
+	if (err) {
+		kfree_skb(skb);
+		return err;
+	}
 
 	return xfrm_nlmsg_multicast(net, skb, 0, XFRMNLGRP_AEVENTS);
 }
@@ -4030,7 +4153,11 @@ static int xfrm_notify_sa_flush(const struct km_event *c)
 
 static inline unsigned int xfrm_sa_len(struct xfrm_state *x)
 {
+	struct xfrm_sub_state *sx;
 	unsigned int l = 0;
+
+	lockdep_assert_held(&x->lock);
+	sx = xfrm_sub_state_get(x);
 	if (x->aead)
 		l += nla_total_size(aead_len(x->aead));
 	if (x->aalg) {
@@ -4046,8 +4173,8 @@ static inline unsigned int xfrm_sa_len(struct xfrm_state *x)
 		l += nla_total_size(sizeof(*x->encap));
 	if (x->tfcpad)
 		l += nla_total_size(sizeof(x->tfcpad));
-	if (x->replay_esn)
-		l += nla_total_size(xfrm_replay_state_esn_len(x->replay_esn));
+	if (sx && x->repl_mode != XFRM_REPLAY_MODE_LEGACY)
+		l += nla_total_size(xfrm_replay_state_esn_len(sx->replay_esn));
 	else
 		l += nla_total_size(sizeof(struct xfrm_replay_state));
 	if (x->security)
@@ -4068,7 +4195,7 @@ static inline unsigned int xfrm_sa_len(struct xfrm_state *x)
 	if (x->pcpu_num != UINT_MAX)
 		l += nla_total_size(sizeof(x->pcpu_num));
 
-	/* Must count x->lastused as it may become non-zero behind our back. */
+	/* Must count sx->lastused as it may become non-zero behind our back. */
 	l += nla_total_size_64bit(sizeof(u64));
 
 	if (x->mapping_maxage)
@@ -4093,10 +4220,12 @@ static int xfrm_notify_sa(struct xfrm_state *x, const struct km_event *c)
 	struct xfrm_usersa_id *id;
 	struct nlmsghdr *nlh;
 	struct sk_buff *skb;
-	unsigned int len = xfrm_sa_len(x);
+	unsigned int len;
 	unsigned int headlen;
 	int err;
 
+	xfrm_sub_state_lock_bh(x);
+	len = xfrm_sa_len(x);
 	headlen = sizeof(*p);
 	if (c->event == XFRM_MSG_DELSA) {
 		len += nla_total_size(headlen);
@@ -4106,13 +4235,15 @@ static int xfrm_notify_sa(struct xfrm_state *x, const struct km_event *c)
 	len += NLMSG_ALIGN(headlen);
 
 	skb = nlmsg_new(len, GFP_ATOMIC);
-	if (skb == NULL)
+	if (skb == NULL) {
+		xfrm_sub_state_unlock_bh(x);
 		return -ENOMEM;
+	}
 
 	nlh = nlmsg_put(skb, c->portid, c->seq, c->event, headlen, 0);
 	err = -EMSGSIZE;
 	if (nlh == NULL)
-		goto out_free_skb;
+		goto out_unlock;
 
 	p = nlmsg_data(nlh);
 	if (c->event == XFRM_MSG_DELSA) {
@@ -4128,11 +4259,13 @@ static int xfrm_notify_sa(struct xfrm_state *x, const struct km_event *c)
 		attr = nla_reserve(skb, XFRMA_SA, sizeof(*p));
 		err = -EMSGSIZE;
 		if (attr == NULL)
-			goto out_free_skb;
+			goto out_unlock;
 
 		p = nla_data(attr);
 	}
 	err = copy_to_user_state_extra(x, p, skb);
+out_unlock:
+	xfrm_sub_state_unlock_bh(x);
 	if (err)
 		goto out_free_skb;
 

@@ -1492,10 +1492,17 @@ static int xfrm_expire_state(int xfrm_sock, uint32_t *seq,
 		goto out_close;
 	}
 
-	if (recv(xfrm_listen, &req, sizeof(req), 0) < 0) {
-		pr_err("recv()");
-		goto out_close;
-	}
+	/* Other workers share the expiry multicast group. */
+	do {
+		if (recv(xfrm_listen, &req, sizeof(req), 0) < 0) {
+			pr_err("recv()");
+			goto out_close;
+		}
+	} while (req.nh.nlmsg_type != XFRM_MSG_EXPIRE ||
+		 req.expire.state.family != AF_INET ||
+		 req.expire.state.id.proto != desc->proto ||
+		 req.expire.state.id.spi != gen_spi(src) ||
+		 req.expire.state.id.daddr.a4 != dst.s_addr);
 
 	if (req.expire.hard != 0x1) {
 		printk("expire.hard is not set: %x", req.expire.hard);
@@ -1519,6 +1526,7 @@ static int xfrm_expire_policy(int xfrm_sock, uint32_t *seq,
 		};
 	} req;
 	struct in_addr src, dst, tunsrc, tundst;
+	struct xfrm_selector sel;
 	int xfrm_listen = -1, ret = KSFT_FAIL;
 	uint32_t seq_listen;
 
@@ -1548,6 +1556,7 @@ static int xfrm_expire_policy(int xfrm_sock, uint32_t *seq,
 	req.expire.pol.sel.family	= AF_INET;
 	req.expire.pol.sel.prefixlen_d	= PREFIX_LEN;
 	req.expire.pol.sel.prefixlen_s	= PREFIX_LEN;
+	memcpy(&sel, &req.expire.pol.sel, sizeof(sel));
 	req.expire.pol.dir		= XFRM_POLICY_OUT;
 	req.expire.hard			= 0xff;
 
@@ -1570,10 +1579,15 @@ static int xfrm_expire_policy(int xfrm_sock, uint32_t *seq,
 		goto out_close;
 	}
 
-	if (recv(xfrm_listen, &req, sizeof(req), 0) < 0) {
-		pr_err("recv()");
-		goto out_close;
-	}
+	/* Other workers share the expiry multicast group. */
+	do {
+		if (recv(xfrm_listen, &req, sizeof(req), 0) < 0) {
+			pr_err("recv()");
+			goto out_close;
+		}
+	} while (req.nh.nlmsg_type != XFRM_MSG_POLEXPIRE ||
+		 req.expire.pol.dir != XFRM_POLICY_OUT ||
+		 memcmp(&req.expire.pol.sel, &sel, sizeof(sel)));
 
 	if (req.expire.hard != 0x1) {
 		printk("expire.hard is not set: %x", req.expire.hard);

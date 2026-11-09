@@ -500,7 +500,9 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct xfrm_state *x = dst->xfrm;
+	struct xfrm_sub_state *sx;
 	struct net *net = xs_net(x);
+	unsigned int seq, stat;
 
 	if (err <= 0 || x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
 		goto resume;
@@ -520,31 +522,49 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 			goto error_nolock;
 		}
 
-		spin_lock_bh(&x->lock);
+		do {
+			seq = read_seqbegin(&x->slock);
+			err = 0;
 
-		if (unlikely(x->km.state != XFRM_STATE_VALID)) {
-			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEINVALID);
-			err = -EINVAL;
+			if (unlikely(x->km.state != XFRM_STATE_VALID)) {
+				stat = LINUX_MIB_XFRMOUTSTATEINVALID;
+				err = -EINVAL;
+			}
+		} while (read_seqretry(&x->slock, seq));
+
+		if (err) {
+			XFRM_INC_STATS(net, stat);
+			goto error_nolock;
+		}
+
+		if (x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
+			xfrm_dev_state_update_stats(x);
+		xfrm_sub_state_lock_bh(x);
+
+		sx = xfrm_sub_state_get(x);
+		if (!sx) {
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
+			err = -ENOENT;
 			goto error;
 		}
 
-		err = xfrm_state_check_expire(x);
+		err = xfrm_state_check_expire(x, sx);
 		if (err) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATEEXPIRED);
 			goto error;
 		}
 
-		err = xfrm_replay_overflow(x, skb);
+		err = xfrm_replay_overflow(x, sx, skb);
 		if (err) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTSTATESEQERROR);
 			goto error;
 		}
 
-		x->curlft.bytes += skb->len;
-		x->curlft.packets++;
-		x->lastused = ktime_get_real_seconds();
+		sx->curlbt.bytes += skb->len;
+		sx->curlbt.packets++;
+		sx->lastused = ktime_get_real_seconds();
 
-		spin_unlock_bh(&x->lock);
+		xfrm_sub_state_unlock_bh(x);
 
 		skb_dst_force(skb);
 		if (!skb_dst(skb)) {
@@ -583,7 +603,7 @@ resume:
 	return 0;
 
 error:
-	spin_unlock_bh(&x->lock);
+	xfrm_sub_state_unlock_bh(x);
 error_nolock:
 	kfree_skb(skb);
 out:

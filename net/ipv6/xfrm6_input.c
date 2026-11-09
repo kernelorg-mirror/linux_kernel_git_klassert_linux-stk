@@ -238,6 +238,7 @@ int xfrm6_input_addr(struct sk_buff *skb, xfrm_address_t *daddr,
 {
 	struct net *net = dev_net(skb->dev);
 	struct xfrm_state *x = NULL;
+	struct xfrm_sub_state *sx;
 	struct sec_path *sp;
 	int i = 0;
 
@@ -283,18 +284,27 @@ int xfrm6_input_addr(struct sk_buff *skb, xfrm_address_t *daddr,
 			continue;
 		}
 
-		spin_lock(&x->lock);
+		if (x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
+			xfrm_dev_state_update_stats(x);
+		xfrm_sub_state_lock(x);
+		sx = xfrm_sub_state_get(x);
+		if (!sx) {
+			xfrm_sub_state_unlock(x);
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
+			xfrm_state_put(x);
+			goto drop;
+		}
 
 		if ((!i || (x->props.flags & XFRM_STATE_WILDRECV)) &&
 		    likely(x->km.state == XFRM_STATE_VALID) &&
-		    !xfrm_state_check_expire(x)) {
-			spin_unlock(&x->lock);
+		    !xfrm_state_check_expire(x, sx)) {
+			xfrm_sub_state_unlock(x);
 			if (x->type->input(x, skb) > 0) {
 				/* found a valid state */
 				break;
 			}
 		} else
-			spin_unlock(&x->lock);
+			xfrm_sub_state_unlock(x);
 
 		xfrm_state_put(x);
 		x = NULL;
@@ -308,12 +318,19 @@ int xfrm6_input_addr(struct sk_buff *skb, xfrm_address_t *daddr,
 
 	sp->xvec[sp->len++] = x;
 
-	spin_lock(&x->lock);
+	xfrm_sub_state_lock(x);
 
-	x->curlft.bytes += skb->len;
-	x->curlft.packets++;
+	sx = xfrm_sub_state_get(x);
+	if (!sx) {
+		xfrm_sub_state_unlock(x);
+		XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
+		goto drop;
+	}
 
-	spin_unlock(&x->lock);
+	sx->curlbt.bytes += skb->len;
+	sx->curlbt.packets++;
+
+	xfrm_sub_state_unlock(x);
 
 	return 1;
 
