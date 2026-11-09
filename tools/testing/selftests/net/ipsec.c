@@ -36,6 +36,11 @@
 
 #include "kselftest.h"
 
+/* IPPROTO_EESP is not in the libc headers yet. */
+#ifndef IPPROTO_EESP
+#define IPPROTO_EESP	49
+#endif
+
 #define printk(fmt, ...)						\
 	ksft_print_msg("%d[%u] " fmt "\n", getpid(), __LINE__, ##__VA_ARGS__)
 
@@ -103,6 +108,7 @@ struct xfrm_key_entry xfrm_key_entries[] = {
 	{"hmac(sha384)", 384},
 	{"cbc(blowfish)", 448},
 	{"hmac(sha512)", 512},
+	{"rfc4106(gcm(aes))", 160},
 	{"rfc4106(gcm(aes))-128", 160},
 	{"rfc4543(gcm(aes))-128", 160},
 	{"rfc4309(ccm(aes))-128", 152},
@@ -900,6 +906,18 @@ static int xfrm_state_pack_algo(struct nlmsghdr *nh, size_t req_sz,
 				return -1;
 		}
 		break;
+	case IPPROTO_EESP:
+		if (!aelen || alen || elen || clen) {
+			printk("BUG: buggy eesp desc");
+			return -1;
+		}
+		alg.u.aead.alg_icv_len = desc->icv_len;
+		strncpy(alg.u.aead.alg_name, desc->ae_algo, ALGO_LEN - 1);
+		if (xfrm_fill_key(desc->ae_algo, alg.u.aead.alg_key,
+					sizeof(alg.buf), &alg.u.aead.alg_key_len))
+			return -1;
+		type = XFRMA_ALG_AEAD;
+		break;
 	default:
 		printk("BUG: unknown proto in desc");
 		return -1;
@@ -1078,13 +1096,13 @@ static int xfrm_set(int xfrm_sock, uint32_t *seq,
 	err = xfrm_state_add(xfrm_sock, (*seq)++, gen_spi(src), src, dst, desc);
 	if (err) {
 		printk("Failed to add xfrm state");
-		return -1;
+		return err;
 	}
 
 	err = xfrm_state_add(xfrm_sock, (*seq)++, gen_spi(src), dst, src, desc);
 	if (err) {
 		printk("Failed to add xfrm state");
-		return -1;
+		return err;
 	}
 
 	/* Check dumps for XFRM_MSG_GETSA */
@@ -1755,6 +1773,7 @@ static int child_serv(int xfrm_sock, uint32_t *seq,
 	struct in_addr src, dst, tunsrc, tundst;
 	struct test_desc msg;
 	int ret = KSFT_FAIL;
+	int err;
 
 	src = inet_makeaddr(INADDR_B, child_ip(nr));
 	dst = inet_makeaddr(INADDR_B, grchild_ip(nr));
@@ -1781,8 +1800,16 @@ static int child_serv(int xfrm_sock, uint32_t *seq,
 	msg.type = MSG_XFRM_ADD;
 	memcpy(&msg.body.xfrm_desc, desc, sizeof(*desc));
 	write_msg(cmd_fd, &msg, 1);
-	if (xfrm_set(xfrm_sock, seq, src, dst, tunsrc, tundst, desc)) {
+	err = xfrm_set(xfrm_sock, seq, src, dst, tunsrc, tundst, desc);
+	if (err) {
 		printk("failed to set xfrm");
+		if (desc->proto == IPPROTO_EESP &&
+		    (err == -EINVAL || err == -EOPNOTSUPP ||
+		     err == -EPROTONOSUPPORT)) {
+			/* The kernel has no EESP support. */
+			ret = KSFT_SKIP;
+			goto cleanup;
+		}
 		goto delete;
 	}
 
@@ -2069,7 +2096,22 @@ static int write_desc(int proto, int test_desc_fd,
 	return __write_desc(test_desc_fd, &desc);
 }
 
-int proto_list[] = { IPPROTO_AH, IPPROTO_COMP, IPPROTO_ESP };
+static int write_desc_ae(int proto, int test_desc_fd, char *ae,
+		unsigned int icv_len)
+{
+	struct xfrm_desc desc = {};
+
+	desc.type = CREATE_TUNNEL;
+	desc.proto = proto;
+	desc.icv_len = icv_len;
+
+	if (ae)
+		strncpy(desc.ae_algo, ae, ALGO_LEN - 1);
+
+	return __write_desc(test_desc_fd, &desc);
+}
+
+int proto_list[] = { IPPROTO_AH, IPPROTO_COMP, IPPROTO_ESP, IPPROTO_EESP };
 char *ah_list[] = {
 	"digest_null", "hmac(md5)", "hmac(sha1)", "hmac(sha256)",
 	"hmac(sha384)", "hmac(sha512)", "xcbc(aes)", "cmac(aes)"
@@ -2094,9 +2136,15 @@ char *ae_list[] = {
 #endif
 };
 
+/* EESP requires an AEAD with an 8 byte IV. The ICV length is in bits. */
+#define EESP_ICV_LEN	128
+char *eesp_list[] = {
+	"rfc4106(gcm(aes))"
+};
+
 const unsigned int proto_plan = ARRAY_SIZE(ah_list) + ARRAY_SIZE(comp_list) \
 				+ (ARRAY_SIZE(ah_list) * ARRAY_SIZE(e_list)) \
-				+ ARRAY_SIZE(ae_list);
+				+ ARRAY_SIZE(ae_list) + ARRAY_SIZE(eesp_list);
 
 static int write_proto_plan(int fd, int proto)
 {
@@ -2127,6 +2175,12 @@ static int write_proto_plan(int fd, int proto)
 		}
 		for (i = 0; i < ARRAY_SIZE(ae_list); i++) {
 			if (write_desc(proto, fd, 0, 0, 0, ae_list[i]))
+				return -1;
+		}
+		break;
+	case IPPROTO_EESP:
+		for (i = 0; i < ARRAY_SIZE(eesp_list); i++) {
+			if (write_desc_ae(proto, fd, eesp_list[i], EESP_ICV_LEN))
 				return -1;
 		}
 		break;
@@ -2264,6 +2318,9 @@ static int check_results(void)
 		switch (tr.res) {
 		case KSFT_PASS:
 			result = ksft_test_result_pass;
+			break;
+		case KSFT_SKIP:
+			result = ksft_test_result_skip;
 			break;
 		case KSFT_FAIL:
 		default:
