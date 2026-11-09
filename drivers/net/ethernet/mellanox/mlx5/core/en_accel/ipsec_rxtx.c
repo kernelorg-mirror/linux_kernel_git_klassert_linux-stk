@@ -161,7 +161,7 @@ void mlx5e_ipsec_set_iv_esn(struct sk_buff *skb, struct xfrm_state *x,
 	u32 seq_hi;
 
 	rcu_read_lock();
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx) {
 		rcu_read_unlock();
 		return;

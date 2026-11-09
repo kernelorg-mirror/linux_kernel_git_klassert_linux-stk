@@ -287,7 +287,7 @@ int xfrm6_input_addr(struct sk_buff *skb, xfrm_address_t *daddr,
 		if (x->xso.type == XFRM_DEV_OFFLOAD_PACKET)
 			xfrm_dev_state_update_stats(x);
 		xfrm_sub_state_lock(x);
-		sx = xfrm_sub_state_get(x);
+		sx = xfrm_sub_state_get(x, x->id.proto);
 		if (!sx) {
 			xfrm_sub_state_unlock(x);
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
@@ -320,7 +320,7 @@ int xfrm6_input_addr(struct sk_buff *skb, xfrm_address_t *daddr,
 
 	xfrm_sub_state_lock(x);
 
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx) {
 		xfrm_sub_state_unlock(x);
 		XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);

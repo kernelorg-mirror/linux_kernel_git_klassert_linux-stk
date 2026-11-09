@@ -541,7 +541,7 @@ static int xfrm_output_one(struct sk_buff *skb, int err)
 			xfrm_dev_state_update_stats(x);
 		xfrm_sub_state_lock_bh(x);
 
-		sx = xfrm_sub_state_get(x);
+		sx = xfrm_sub_state_get(x, x->id.proto);
 		if (!sx) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);
 			err = -ENOENT;

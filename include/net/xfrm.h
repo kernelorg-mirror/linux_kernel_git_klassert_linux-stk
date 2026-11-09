@@ -33,6 +33,7 @@
 #include <net/snmp.h>
 #endif
 
+#define XFRM_PROTO_EESP		49
 #define XFRM_PROTO_ESP		50
 #define XFRM_PROTO_AH		51
 #define XFRM_PROTO_COMP		108
@@ -186,6 +187,8 @@ enum xfrm_replay_mode {
 	XFRM_REPLAY_MODE_ESN,
 };
 
+#define XFRM_MAX_SUB_STATES 1
+
 struct xfrm_lifetime {
 	__u64	add_time;
 	__u64	use_time;
@@ -228,8 +231,12 @@ struct xfrm_sub_state {
 
 struct xfrm_sub_state_rcu {
 	/* Sub SA data */
-	struct xfrm_sub_state *sx;
+	union {
+		struct xfrm_sub_state *sx;
+		struct xfrm_sub_state __percpu *psx;
+	};
 	struct rcu_head rcu;
+	bool percpu;
 };
 
 /* Full description of state of transformer.
@@ -357,6 +364,8 @@ struct xfrm_state {
 	u32			replay_maxage;
 	u32			replay_maxdiff;
 
+	struct xfrm_subsa_info	subsa;
+
 	/* Legacy and non IPsec stuff goes here. */
 
 	/* Data for care-of address */
@@ -469,6 +478,7 @@ struct xfrm_state_afinfo {
 
 	const struct xfrm_type_offload *type_offload_esp;
 
+	const struct xfrm_type		*type_eesp;
 	const struct xfrm_type		*type_esp;
 	const struct xfrm_type		*type_ipip;
 	const struct xfrm_type		*type_ipip6;
@@ -990,19 +1000,30 @@ static inline void xfrm_pols_put(struct xfrm_policy **pols, int npols)
 
 void __xfrm_state_destroy(struct xfrm_state *);
 
-/* RCU protects the sub-state lifetime. The sub state itself is protected
- * by the state lock, which also serializes the legacy replay and the
- * fragment handling.
+/* RCU protects sub-state lifetime for both protocols. BH-disabled callers
+ * also pin EESP's CPU-local counters; legacy replay and fragments need lock.
+ *
+ * The EESP sub state is allocated per CPU. Disable preemption while it is
+ * locked, so that the CPU local data cannot be modified concurrently by
+ * another task running on the same CPU.
  */
 static inline void xfrm_sub_state_lock(struct xfrm_state *x)
 {
 	rcu_read_lock();
-	spin_lock(&x->lock);
+	if (x->id.proto != IPPROTO_EESP) {
+		spin_lock(&x->lock);
+	} else {
+		preempt_disable();
+	}
 }
 
 static inline void xfrm_sub_state_unlock(struct xfrm_state *x)
 {
-	spin_unlock(&x->lock);
+	if (x->id.proto != IPPROTO_EESP) {
+		spin_unlock(&x->lock);
+	} else {
+		preempt_enable();
+	}
 	rcu_read_unlock();
 }
 
@@ -1663,6 +1684,7 @@ static inline bool xfrm_id_proto_valid(u8 proto)
 	switch (proto) {
 	case IPPROTO_AH:
 	case IPPROTO_ESP:
+	case IPPROTO_EESP:
 	case IPPROTO_COMP:
 #if IS_ENABLED(CONFIG_IPV6)
 	case IPPROTO_ROUTING:
@@ -1679,6 +1701,7 @@ static inline int xfrm_id_proto_match(u8 proto, u8 userproto)
 {
 	return (!userproto || proto == userproto ||
 		(userproto == IPSEC_PROTO_ANY && (proto == IPPROTO_AH ||
+						  proto == IPPROTO_EESP ||
 						  proto == IPPROTO_ESP ||
 						  proto == IPPROTO_COMP)));
 }
@@ -1806,9 +1829,9 @@ void xfrm_state_walk_init(struct xfrm_state_walk *walk, u8 proto,
 int xfrm_state_walk(struct net *net, struct xfrm_state_walk *walk,
 		    int (*func)(struct xfrm_state *, int, void*), void *);
 void xfrm_state_walk_done(struct xfrm_state_walk *walk, struct net *net);
-struct xfrm_sub_state *xfrm_sub_state_get(struct xfrm_state *x);
-const struct xfrm_sub_state *xfrm_sub_state_get_const(const struct xfrm_state *x);
-int xfrm_sub_state_alloc(struct xfrm_state *x, struct nlattr *rta);
+struct xfrm_sub_state *xfrm_sub_state_get(struct xfrm_state *x, __u8 proto);
+const struct xfrm_sub_state *xfrm_sub_state_get_const(const struct xfrm_state *x, __u8 proto);
+int xfrm_sub_state_alloc(struct xfrm_state *x, __u8 proto, struct nlattr *rta);
 struct xfrm_state *xfrm_state_alloc(struct net *net);
 void xfrm_state_free(struct xfrm_state *x);
 struct xfrm_state *xfrm_state_find(const xfrm_address_t *daddr,

@@ -159,6 +159,11 @@ int xfrm_parse_spi(struct sk_buff *skb, u8 nexthdr, __be32 *spi, __be32 *seq)
 		offset = offsetof(struct ip_esp_hdr, spi);
 		offset_seq = offsetof(struct ip_esp_hdr, seq_no);
 		break;
+	case IPPROTO_EESP:
+		hlen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr);
+		offset = offsetof(struct ip_eesp_hdr, spi);
+		offset_seq = sizeof(struct ip_eesp_hdr) + offsetof(struct ip_eesp_peer_hdr, seq_no);
+		break;
 	case IPPROTO_COMP:
 		if (!pskb_may_pull(skb, sizeof(struct ip_comp_hdr)))
 			return -EINVAL;
@@ -514,7 +519,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 			async = 1;
 			seq = XFRM_SKB_CB(skb)->seq.input.low;
 			xfrm_sub_state_lock(x);
-			sx = xfrm_sub_state_get(x);
+			sx = xfrm_sub_state_get(x, x->id.proto);
 			if (!sx) {
 				XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
 				goto drop_unlock;
@@ -539,7 +544,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 								 x->type->proto);
 
 					xfrm_sub_state_lock(x);
-					sx = xfrm_sub_state_get(x);
+					sx = xfrm_sub_state_get(x, x->id.proto);
 					if (!sx) {
 						XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
 						goto drop_unlock;
@@ -667,7 +672,7 @@ process:
 			xfrm_dev_state_update_stats(x);
 		xfrm_sub_state_lock(x);
 
-		sx = xfrm_sub_state_get(x);
+		sx = xfrm_sub_state_get(x, x->id.proto);
 		if (!sx) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
 			goto drop_unlock;
@@ -707,7 +712,7 @@ process:
 			/* We need to refetch the sx pointer because we
 			 * left the RCU critical section.
 			 */
-			sx = xfrm_sub_state_get(x);
+			sx = xfrm_sub_state_get(x, x->id.proto);
 			if (!sx) {
 				XFRM_INC_STATS(net, LINUX_MIB_XFRMINERROR);
 				goto drop_unlock;

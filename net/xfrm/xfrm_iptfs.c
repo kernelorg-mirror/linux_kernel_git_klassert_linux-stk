@@ -1891,7 +1891,7 @@ static int iptfs_output_collect(struct net *net, struct sock *sk, struct sk_buff
 
 	/* This does not protect anything from struct xfrm_state.
 	 * Instead it is use as a global lock for packet queueing.
-	 */
+	 * this does not work with EESP.*/
 	xfrm_sub_state_lock_bh(x);
 
 	skb_list_walk_safe(segs, skb, nskb) {
@@ -2349,7 +2349,7 @@ static enum hrtimer_restart iptfs_delay_timer(struct hrtimer *me)
 
 	/* XXX: This does not protect anything from xfrm_state,
 	 * instead it is used as a global lock to hold off packet
-	 * queueing. */
+	 * queueing. This does not work with EESP. */
 	xfrm_sub_state_lock(x);
 	__skb_queue_head_init(&list);
 	skb_queue_splice_init(&xtfs->queue, &list);
@@ -2747,7 +2747,7 @@ static void iptfs_destroy_state(struct xfrm_state *x)
 
 	/* This does not protect anything from struct xfrm_state.
 	 * Instead it is use as a global lock for packet queueing.
-	 */
+	 * this does not work with EESP.*/
 
 	xfrm_sub_state_lock_bh(xtfs->x);
 	hrtimer_cancel(&xtfs->iptfs_timer);

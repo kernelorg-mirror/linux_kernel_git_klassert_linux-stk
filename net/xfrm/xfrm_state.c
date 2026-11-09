@@ -257,6 +257,9 @@ int xfrm_register_type(const struct xfrm_type *type, unsigned short family)
 	case IPPROTO_ESP:
 		X(afinfo, type, esp);
 		break;
+	case IPPROTO_EESP:
+		X(afinfo, type, eesp);
+		break;
 	case IPPROTO_IPIP:
 		X(afinfo, type, ipip);
 		break;
@@ -302,6 +305,9 @@ void xfrm_unregister_type(const struct xfrm_type *type, unsigned short family)
 	case IPPROTO_ESP:
 		X(afinfo, type, esp);
 		break;
+	case IPPROTO_EESP:
+		X(afinfo, type, eesp);
+		break;
 	case IPPROTO_IPIP:
 		X(afinfo, type, ipip);
 		break;
@@ -340,6 +346,9 @@ retry:
 		break;
 	case IPPROTO_AH:
 		type = afinfo->type_ah;
+		break;
+	case IPPROTO_EESP:
+		type = afinfo->type_eesp;
 		break;
 	case IPPROTO_ESP:
 		type = afinfo->type_esp;
@@ -587,7 +596,7 @@ retry:
 	return cbs;
 }
 
-static void xfrm_sub_state_free(struct xfrm_state *x)
+static void xfrm_sub_state_free(struct xfrm_state *x, __u8 proto)
 {
 	struct xfrm_sub_state_rcu *rsx;
 
@@ -596,7 +605,10 @@ static void xfrm_sub_state_free(struct xfrm_state *x)
 	if (!rsx)
 		return;
 
-	kfree(rsx->sx);
+	if (rsx->percpu)
+		free_percpu(rsx->psx);
+	else
+		kfree(rsx->sx);
 
 	kfree(rsx);
 }
@@ -610,8 +622,6 @@ EXPORT_SYMBOL(xfrm_state_free);
 static void xfrm_state_delete_tunnel(struct xfrm_state *x);
 static void xfrm_state_gc_destroy(struct xfrm_state *x)
 {
-	struct xfrm_sub_state_rcu *rsx;
-
 	if (x->mode_cbs && x->mode_cbs->destroy_state)
 		x->mode_cbs->destroy_state(x);
 	hrtimer_cancel(&x->mtimer);
@@ -629,13 +639,28 @@ static void xfrm_state_gc_destroy(struct xfrm_state *x)
 		xfrm_put_type(x->type);
 	}
 	rcu_read_lock();
-	rsx = rcu_dereference(x->rsx);
-	if (rsx && rsx->sx->xfrag.page)
-		put_page(rsx->sx->xfrag.page);
+	if (rcu_access_pointer(x->rsx) &&
+	    rcu_dereference(x->rsx)->percpu) {
+		struct xfrm_sub_state *sx;
+		struct xfrm_sub_state_rcu *rsx = rcu_dereference(x->rsx);
+		int cpu, i;
+
+		for_each_possible_cpu(cpu) {
+			sx = per_cpu_ptr(rsx->psx, cpu);
+			for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+				if (sx[i].xfrag.page)
+					put_page(sx[i].xfrag.page);
+			}
+		}
+	} else {
+		struct xfrm_sub_state_rcu *rsx = rcu_dereference(x->rsx);
+		if (rsx && rsx->sx->xfrag.page)
+			put_page(rsx->sx->xfrag.page);
+	}
 	rcu_read_unlock();
 	xfrm_dev_state_free(x);
 	security_xfrm_state_free(x);
-	xfrm_sub_state_free(x);
+	xfrm_sub_state_free(x, x->id.proto);
 	xfrm_state_free(x);
 }
 
@@ -755,9 +780,11 @@ out:
 
 static void xfrm_replay_timer_handler(struct timer_list *t);
 
-struct xfrm_sub_state *xfrm_sub_state_get(struct xfrm_state *x)
+struct xfrm_sub_state *xfrm_sub_state_get(struct xfrm_state *x, __u8 proto)
 {
 	struct xfrm_sub_state_rcu *rsx;
+	struct xfrm_sub_state *sxa;
+	struct xfrm_sub_state *sx;
 
 	rsx = rcu_dereference_check(x->rsx,
 				    lockdep_is_held(&x->lock) ||
@@ -765,13 +792,26 @@ struct xfrm_sub_state *xfrm_sub_state_get(struct xfrm_state *x)
 	if (!rsx)
 		return NULL;
 
-	return rsx->sx;
+	if (proto == IPPROTO_EESP && rsx->percpu) {
+		/* The caller holds the sub state lock, which disables
+		 * preemption for EESP. Use the CPU local pointer.
+		 */
+		sxa = this_cpu_ptr(rsx->psx);
+		sx = &sxa[0];
+
+	} else {
+		sx = rsx->sx;
+	}
+
+	return sx;
 }
 EXPORT_SYMBOL(xfrm_sub_state_get);
 
-const struct xfrm_sub_state *xfrm_sub_state_get_const(const struct xfrm_state *x)
+const struct xfrm_sub_state *xfrm_sub_state_get_const(const struct xfrm_state *x, __u8 proto)
 {
 	struct xfrm_sub_state_rcu *rsx;
+	struct xfrm_sub_state *sxa;
+	struct xfrm_sub_state *sx;
 
 	rsx = rcu_dereference_check(x->rsx,
 				    lockdep_is_held(&x->lock) ||
@@ -779,17 +819,30 @@ const struct xfrm_sub_state *xfrm_sub_state_get_const(const struct xfrm_state *x
 	if (!rsx)
 		return NULL;
 
-	return rsx->sx;
+	if (proto == IPPROTO_EESP && rsx->percpu) {
+		/* The caller holds the sub state lock, which disables
+		 * preemption for EESP. Use the CPU local pointer.
+		 */
+		sxa = this_cpu_ptr(rsx->psx);
+		sx = &sxa[0];
+
+	} else {
+		sx = rsx->sx;
+	}
+
+	return sx;
 }
 EXPORT_SYMBOL(xfrm_sub_state_get_const);
 
-static int __xfrm_sub_state_alloc(struct xfrm_state *x,
+static int __xfrm_sub_state_alloc(struct xfrm_state *x, __u8 proto,
 				  struct nlattr *rta, gfp_t gfp)
 {
 	struct xfrm_replay_state_esn *p, *pp, *up = NULL;
 	struct xfrm_sub_state_rcu  *rsx;
+	struct xfrm_sub_state __percpu *psx;
 	struct xfrm_sub_state *sx;
 	unsigned int klen = sizeof(*up), ulen = 0;
+	unsigned int i, cpu;
 
 	if (rta) {
 		up = nla_data(rta);
@@ -801,32 +854,63 @@ static int __xfrm_sub_state_alloc(struct xfrm_state *x,
 	if (!rsx)
 		return -ENOMEM;
 
-	sx = kzalloc(sizeof(*sx) + 2 * klen, gfp);
-	if (!sx) {
-		kfree(rsx);
-		return -ENOMEM;
-	}
+	if (proto == IPPROTO_EESP && x->subsa.max > 0) {
+		if (x->subsa.max > XFRM_MAX_SUB_STATES) {
+			kfree(rsx);
+			return -EINVAL;
+		}
 
-	if (rta) {
-		sx->replay_esn_valid = true;
-		p = xfrm_replay_state_get(sx);
-		memcpy(p, up, ulen);
-		pp = xfrm_preplay_state_get(sx);
-		memcpy(pp, up, ulen);
-	}
+		psx = __alloc_percpu_gfp(x->subsa.max * (sizeof(*sx) + 2 * klen),
+					 __alignof__(struct xfrm_sub_state), gfp);
+		if (!psx) {
+			kfree(rsx);
+			return -ENOMEM;
+		}
 
-	rsx->sx = sx;
+		for_each_possible_cpu(cpu) {
+			sx = per_cpu_ptr(psx, cpu);
+			for (i = 0; i < x->subsa.max; i++) {
+				if (rta) {
+					sx->replay_esn_valid = true;
+					p = xfrm_replay_state_get(sx);
+					memcpy(p, up, ulen);
+					pp = xfrm_preplay_state_get(sx);
+					memcpy(pp, up, ulen);
+				}
+			}
+		}
+
+		rsx->psx = psx;
+		rsx->percpu = true;
+
+	} else {
+		sx = kzalloc(sizeof(*sx) + 2 * klen, gfp);
+		if (!sx) {
+			kfree(rsx);
+			return -ENOMEM;
+		}
+
+		if (rta) {
+			sx->replay_esn_valid = true;
+			p = xfrm_replay_state_get(sx);
+			memcpy(p, up, ulen);
+			pp = xfrm_preplay_state_get(sx);
+			memcpy(pp, up, ulen);
+		}
+
+		rsx->sx = sx;
+	}
 
 	/* The state has not been published yet. Replace its default sub state. */
-	xfrm_sub_state_free(x);
+	xfrm_sub_state_free(x, proto);
 	rcu_assign_pointer(x->rsx, rsx);
 
 	return 0;
 }
 
-int xfrm_sub_state_alloc(struct xfrm_state *x, struct nlattr *rta)
+int xfrm_sub_state_alloc(struct xfrm_state *x, __u8 proto, struct nlattr *rta)
 {
-	return __xfrm_sub_state_alloc(x, rta, GFP_KERNEL);
+	return __xfrm_sub_state_alloc(x, proto, rta, GFP_KERNEL);
 }
 EXPORT_SYMBOL(xfrm_sub_state_alloc);
 
@@ -861,7 +945,7 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
 		timer_setup(&x->rtimer, xfrm_replay_timer_handler, 0);
 	}
 
-	if (x && __xfrm_sub_state_alloc(x, NULL, GFP_ATOMIC)) {
+	if (x && __xfrm_sub_state_alloc(x, 0, NULL, GFP_ATOMIC)) {
 		kmem_cache_free(xfrm_state_cache, x);
 		return NULL;
 	}
@@ -2086,7 +2170,7 @@ static inline int clone_security(struct xfrm_state *x, struct xfrm_sec_ctx *secu
 
 /* An unpublished clone only needs replay configuration for initialization.
  * Live counters, bitmaps and fragment ownership stay with the source until
- * commit.
+ * commit, including for CPU-local EESP sub states.
  */
 static int xfrm_prepare_sub_state(struct xfrm_state *x, struct xfrm_state *orig)
 {
@@ -2102,7 +2186,7 @@ static int xfrm_prepare_sub_state(struct xfrm_state *x, struct xfrm_state *orig)
 	unsigned int seq;
 
 	xfrm_sub_state_lock_bh(orig);
-	sx = xfrm_sub_state_get(orig);
+	sx = xfrm_sub_state_get(orig, orig->id.proto);
 	if (!sx) {
 		xfrm_sub_state_unlock_bh(orig);
 		return -ENOENT;
@@ -2119,7 +2203,7 @@ static int xfrm_prepare_sub_state(struct xfrm_state *x, struct xfrm_state *orig)
 	} while (read_seqretry(&orig->slock, seq));
 	xfrm_sub_state_unlock_bh(orig);
 
-	return xfrm_sub_state_alloc(x, esn ? &replay_attr.nla : NULL);
+	return xfrm_sub_state_alloc(x, x->id.proto, esn ? &replay_attr.nla : NULL);
 }
 
 static struct xfrm_state *xfrm_state_clone_and_setup(struct xfrm_state *orig,
@@ -2502,7 +2586,7 @@ out:
 		if (READ_ONCE(x1->curlft.use_time)) {
 			struct xfrm_sub_state *sx;
 
-			sx = xfrm_sub_state_get(x1);
+			sx = xfrm_sub_state_get(x1, x1->id.proto);
 			if (sx)
 				__xfrm_state_check_expire(x1, sx);
 		}
@@ -2537,7 +2621,8 @@ EXPORT_SYMBOL(xfrm_state_update);
 static int __xfrm_state_check_expire(struct xfrm_state *x,
 				     struct xfrm_sub_state *sx)
 {
-	lockdep_assert_held(&x->lock);
+	if (x->id.proto != IPPROTO_EESP)
+		lockdep_assert_held(&x->lock);
 	lockdep_assert_held(&x->slock.lock);
 
 	if (x->km.state != XFRM_STATE_VALID)
@@ -2564,9 +2649,34 @@ static int __xfrm_state_check_expire(struct xfrm_state *x,
 
 int xfrm_state_check_expire(struct xfrm_state *x, struct xfrm_sub_state *sx)
 {
+	bool eesp = x->id.proto == IPPROTO_EESP;
 	int err;
 
-	lockdep_assert_held(&x->lock);
+	if (eesp) {
+		unsigned int seq;
+		bool valid, check;
+
+		/* Keep the common CPU-local accounting path free of a shared
+		 * writer lock. Recheck under the lock before changing metadata.
+		 */
+		do {
+			seq = read_seqbegin(&x->slock);
+			valid = x->km.state == XFRM_STATE_VALID;
+			check = !READ_ONCE(x->curlft.use_time) ||
+				sx->curlbt.bytes >= x->lft.hard_byte_limit ||
+				sx->curlbt.packets >= x->lft.hard_packet_limit ||
+				(!x->km.dying &&
+				 (sx->curlbt.bytes >= x->lft.soft_byte_limit ||
+				  sx->curlbt.packets >= x->lft.soft_packet_limit));
+		} while (read_seqretry(&x->slock, seq));
+
+		if (!valid)
+			return -EINVAL;
+		if (!check && x->xso.type != XFRM_DEV_OFFLOAD_PACKET)
+			return 0;
+	} else {
+		lockdep_assert_held(&x->lock);
+	}
 
 	write_seqlock(&x->slock);
 	err = __xfrm_state_check_expire(x, sx);
@@ -2818,6 +2928,7 @@ int verify_spi_info(u8 proto, u32 min, u32 max, struct netlink_ext_ack *extack)
 	switch (proto) {
 	case IPPROTO_AH:
 	case IPPROTO_ESP:
+	case IPPROTO_EESP:
 		break;
 
 	case IPPROTO_COMP:
@@ -3005,6 +3116,9 @@ static void xfrm_replay_timer_handler(struct timer_list *t)
 	struct xfrm_state *x = container_of(t, struct xfrm_state, rtimer);
 	unsigned int seq;
 	u8 state;
+
+	if (x->id.proto == IPPROTO_EESP)
+		return;
 
 	xfrm_sub_state_lock_bh(x);
 

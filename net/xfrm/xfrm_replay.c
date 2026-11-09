@@ -40,7 +40,7 @@ static void xfrm_replay_notify_esn(struct xfrm_state *x, int event);
 
 void xfrm_replay_notify(struct xfrm_state *x, int event)
 {
-	struct xfrm_sub_state *sx = xfrm_sub_state_get(x);
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	struct km_event c;
 	/* we send notify messages in case
 	 *  1. we updated on of the sequence numbers, and the seqno difference
@@ -315,7 +315,7 @@ static void xfrm_replay_advance_bmp(struct xfrm_sub_state *sx , __be32 net_seq)
 
 static void xfrm_replay_notify_bmp(struct xfrm_state *x, int event)
 {
-	struct xfrm_sub_state *sx = xfrm_sub_state_get(x);
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	struct km_event c;
 	struct xfrm_replay_state_esn *replay_esn;
 	struct xfrm_replay_state_esn *preplay_esn;
@@ -378,7 +378,7 @@ static void xfrm_replay_notify_bmp(struct xfrm_state *x, int event)
 
 static void xfrm_replay_notify_esn(struct xfrm_state *x, int event)
 {
-	struct xfrm_sub_state *sx = xfrm_sub_state_get(x);
+	struct xfrm_sub_state *sx = xfrm_sub_state_get(x, x->id.proto);
 	u32 seq_diff, oseq_diff;
 	struct km_event c;
 	struct xfrm_replay_state_esn *replay_esn;
@@ -856,7 +856,7 @@ int xfrm_init_replay(struct xfrm_state *x, struct netlink_ext_ack *extack)
 	int err;
 
 	xfrm_sub_state_lock_bh(x);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	err = __xfrm_init_replay(x, sx, extack);
 	xfrm_sub_state_unlock_bh(x);
 	return err;

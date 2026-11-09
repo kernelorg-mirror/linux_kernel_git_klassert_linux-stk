@@ -166,9 +166,10 @@ static inline int verify_replay(struct xfrm_usersa_info *p,
 		return -EINVAL;
 	}
 
-	/* As only ESP and AH support ESN feature. */
-	if ((p->id.proto != IPPROTO_ESP) && (p->id.proto != IPPROTO_AH)) {
-		NL_SET_ERR_MSG(extack, "ESN only supported for ESP and AH");
+	/* As only ESP, AH and EESP support ESN feature. */
+	if (p->id.proto != IPPROTO_ESP && p->id.proto != IPPROTO_AH &&
+	    p->id.proto != IPPROTO_EESP) {
+		NL_SET_ERR_MSG(extack, "ESN only supported for ESP, AH and EESP");
 		return -EINVAL;
 	}
 
@@ -352,6 +353,7 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 		break;
 
 	case IPPROTO_ESP:
+	case IPPROTO_EESP:
 		if (attrs[XFRMA_ALG_COMP]) {
 			NL_SET_ERR_MSG(extack, "Invalid attribute for ESP: COMP");
 			goto out;
@@ -744,6 +746,26 @@ static int attach_aead(struct xfrm_state *x, struct nlattr *rta,
 	return 0;
 }
 
+static int attach_subsa_info(struct xfrm_state *x, struct nlattr *rta,
+			     struct netlink_ext_ack *extack)
+{
+	struct xfrm_subsa_info *subsa_info;
+	struct xfrm_subsa_info *xsubsa_info;
+
+	if (!rta)
+		return 0;
+
+	subsa_info = nla_data(rta);
+	xsubsa_info = &x->subsa;
+
+	xsubsa_info = kmemdup(subsa_info, sizeof(struct xfrm_subsa_info), GFP_KERNEL);
+	if (!xsubsa_info)
+		return -ENOMEM;
+
+	return 0;
+}
+
+
 static inline int xfrm_replay_verify_len(struct xfrm_replay_state_esn *replay_esn,
 					 struct nlattr *rp,
 					 struct netlink_ext_ack *extack)
@@ -864,8 +886,10 @@ static int xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
 	struct nlattr *et = attrs[XFRMA_ETIMER_THRESH];
 	struct nlattr *rt = attrs[XFRMA_REPLAY_THRESH];
 	struct nlattr *mt = attrs[XFRMA_MTIMER_THRESH];
+	int i, cpu;
 
-	lockdep_assert_held(&x->lock);
+	if (x->id.proto != IPPROTO_EESP)
+		lockdep_assert_held(&x->lock);
 	rsx = rcu_dereference_check(x->rsx, lockdep_is_held(&x->lock));
 	if (!rsx)
 		return -ENOENT;
@@ -873,22 +897,48 @@ static int xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
 	if (re) {
 		replay_esn = nla_data(re);
 
-		sx = rsx->sx;
-		p = xfrm_replay_state_get(sx);
-		pp = xfrm_preplay_state_get(sx);
+		if (x->id.proto == IPPROTO_EESP) {
+			for_each_possible_cpu(cpu) {
+				sx = per_cpu_ptr(rsx->psx, cpu);
+				for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+					p = xfrm_replay_state_get(&sx[i]);
+					pp = xfrm_preplay_state_get(&sx[i]);
 
-		memcpy(p, replay_esn,
-		       xfrm_replay_state_esn_len(replay_esn));
-		memcpy(pp, replay_esn,
-		       xfrm_replay_state_esn_len(replay_esn));
+					memcpy(p, replay_esn,
+					       xfrm_replay_state_esn_len(replay_esn));
+					memcpy(pp, replay_esn,
+					       xfrm_replay_state_esn_len(replay_esn));
+				}
+			}
+		} else {
+			
+			sx = rsx->sx;
+			p = xfrm_replay_state_get(sx);
+			pp = xfrm_preplay_state_get(sx);
+
+			memcpy(p, replay_esn,
+			       xfrm_replay_state_esn_len(replay_esn));
+			memcpy(pp, replay_esn,
+			       xfrm_replay_state_esn_len(replay_esn));
+		}
 	}
 
 	if (lt) {
 		ltime = nla_data(lt);
 
-		sx = rsx->sx;
-		sx->curlbt.bytes = ltime->bytes;
-		sx->curlbt.packets = ltime->packets;
+		if (x->id.proto == IPPROTO_EESP) {
+			for_each_possible_cpu(cpu) {
+				sx = per_cpu_ptr(rsx->psx, cpu);
+				for (i = 0; i < XFRM_MAX_SUB_STATES; i++) {
+					sx[i].curlbt.bytes = ltime->bytes;
+					sx[i].curlbt.packets = ltime->packets;
+				}
+			}
+		} else {
+			sx = rsx->sx;
+			sx->curlbt.bytes = ltime->bytes;
+			sx->curlbt.packets = ltime->packets;
+		}
 
 		x->curlft.add_time = ltime->add_time;
 		x->curlft.use_time = ltime->use_time;
@@ -896,6 +946,7 @@ static int xfrm_update_ae_params(struct xfrm_state *x, struct nlattr **attrs,
 
 	if (rp) {
 		replay = nla_data(rp);
+		BUG_ON(x->id.proto == IPPROTO_EESP);
 
 		sx = rsx->sx;
 		sx->replay = *replay;
@@ -1016,7 +1067,12 @@ static struct xfrm_state *xfrm_state_construct(struct net *net,
 			goto error;
 	}
 
-	err = xfrm_sub_state_alloc(x, attrs[XFRMA_REPLAY_ESN_VAL]);
+	if (attrs[XFRMA_SUB_SA]) {
+		if ((err = attach_subsa_info(x, attrs[XFRMA_SUB_SA], extack)))
+			goto error;
+	}
+
+	err = xfrm_sub_state_alloc(x, x->id.proto, attrs[XFRMA_REPLAY_ESN_VAL]);
 	if (err)
 		goto error;
 
@@ -1183,8 +1239,16 @@ static int copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
 	struct xfrm_sub_state *sx;
 	int err = 0;
 
-	lockdep_assert_held(&x->lock);
-	sx = xfrm_sub_state_get(x);
+	if (x->id.proto != IPPROTO_EESP) {
+		lockdep_assert_held(&x->lock);
+	} else {
+		/* The EESP sub state is per CPU. Disable preemption while it
+		 * is accessed, so that the CPU local data cannot be modified
+		 * concurrently by another task running on the same CPU.
+		 */
+		preempt_disable();
+	}
+	sx = xfrm_sub_state_get(x, x->id.proto);
 
 	if (!sx) {
 		err = -ENOENT;
@@ -1211,6 +1275,8 @@ static int copy_to_user_state(struct xfrm_state *x, struct xfrm_usersa_info *p)
 	p->seq = x->km.seq;
 
 out:
+	if (x->id.proto == IPPROTO_EESP)
+		preempt_enable();
 	return err;
 }
 
@@ -1429,7 +1495,7 @@ static int copy_to_user_state_extra(struct xfrm_state *x,
 	int ret = 0;
 
 	xfrm_dev_state_update_stats(x);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx) {
 		ret = -ENOENT;
 		goto out;
@@ -2755,8 +2821,12 @@ static inline unsigned int xfrm_aevent_msgsize(struct xfrm_state *x)
 	struct xfrm_sub_state *sx;
 	unsigned int replay_size, size;
 
-	lockdep_assert_held(&x->lock);
-	sx = xfrm_sub_state_get(x);
+	if (x->id.proto != IPPROTO_EESP) {
+		lockdep_assert_held(&x->lock);
+	} else {
+		preempt_disable();
+	}
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	replay_size = sx && x->repl_mode != XFRM_REPLAY_MODE_LEGACY ?
 			      xfrm_replay_state_esn_len(sx->replay_esn) :
 			      sizeof(struct xfrm_replay_state);
@@ -2770,6 +2840,8 @@ static inline unsigned int xfrm_aevent_msgsize(struct xfrm_state *x)
 	       + nla_total_size(sizeof(x->dir)) /* XFRMA_SA_DIR */
 	       + nla_total_size(4) /* XFRMA_SA_PCPU */
 	       + nla_total_size(sizeof(x->if_id)); /* XFRMA_IF_ID */
+	if (x->id.proto == IPPROTO_EESP)
+		preempt_enable();
 	return size;
 }
 
@@ -2783,7 +2855,8 @@ static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct 
 	unsigned int seq;
 	int err;
 
-	lockdep_assert_held(&x->lock);
+	if (x->id.proto != IPPROTO_EESP)
+		lockdep_assert_held(&x->lock);
 
 	nlh = nlmsg_put(skb, c->portid, c->seq, XFRM_MSG_NEWAE, sizeof(*id), 0);
 	if (!nlh) {
@@ -2795,13 +2868,17 @@ static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct 
 	memset(&id->sa_id, 0, sizeof(id->sa_id));
 
 	/*
-	 * Take a snapshot of the sub-state. It is protected by the state
-	 * lock that the caller already holds.
+	 * Take a snapshot of the sub-state. The EESP sub-state is per CPU,
+	 * so disable preemption while it is copied. The legacy sub-state is
+	 * protected by the state lock that the caller already holds.
 	 */
-	sx = xfrm_sub_state_get(x);
+	if (x->id.proto == IPPROTO_EESP)
+		preempt_disable();
+
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx) {
 		err = -ENOENT;
-		goto out_cancel;
+		goto out_preempt;
 	}
 
 	do {
@@ -2840,7 +2917,10 @@ static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct 
 			      &replay);
 	}
 	if (err)
-		goto out_cancel;
+		goto out_preempt;
+
+	if (x->id.proto == IPPROTO_EESP)
+		preempt_enable();
 
 	err = nla_put_64bit(skb, XFRMA_LTIME_VAL, sizeof(curlft), &curlft,
 			    XFRMA_PAD);
@@ -2881,6 +2961,9 @@ static int build_aevent(struct sk_buff *skb, struct xfrm_state *x, const struct 
 	err = 0;
 	goto out;
 
+out_preempt:
+	if (x->id.proto == IPPROTO_EESP)
+		preempt_enable();
 out_cancel:
 	nlmsg_cancel(skb, nlh);
 out:
@@ -2967,8 +3050,14 @@ static int xfrm_new_ae(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (x == NULL)
 		return -ESRCH;
 
+
+	if (x->id.proto == IPPROTO_EESP && (re || lt || rp)) {
+		NL_SET_ERR_MSG(extack, "EESP does not support replay or lifetime updates");
+		goto out;
+	}
+
 	xfrm_sub_state_lock_bh(x);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 
 	if (sx)
 		err = xfrm_replay_verify_len(sx->replay_esn, re, extack);
@@ -4156,8 +4245,12 @@ static inline unsigned int xfrm_sa_len(struct xfrm_state *x)
 	struct xfrm_sub_state *sx;
 	unsigned int l = 0;
 
-	lockdep_assert_held(&x->lock);
-	sx = xfrm_sub_state_get(x);
+	if (x->id.proto != IPPROTO_EESP) {
+		lockdep_assert_held(&x->lock);
+	} else {
+		preempt_disable();
+	}
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (x->aead)
 		l += nla_total_size(aead_len(x->aead));
 	if (x->aalg) {
@@ -4210,6 +4303,8 @@ static inline unsigned int xfrm_sa_len(struct xfrm_state *x)
 	if (x->mode_cbs && x->mode_cbs->sa_len)
 		l += x->mode_cbs->sa_len(x);
 
+	if (x->id.proto == IPPROTO_EESP)
+		preempt_enable();
 	return l;
 }
 

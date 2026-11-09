@@ -84,7 +84,7 @@ static void mlx5e_ipsec_handle_sw_limits(struct work_struct *_work)
 
 	xfrm_dev_state_update_stats(x);
 	xfrm_sub_state_lock_bh(x);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx) {
 		xfrm_sub_state_unlock_bh(x);
 		return;
@@ -106,7 +106,7 @@ static bool mlx5e_ipsec_update_esn_state(struct mlx5e_ipsec_sa_entry *sa_entry)
 	bool changed = false;
 
 	lockdep_assert_held(&x->lock);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx)
 		goto out;
 
@@ -420,7 +420,7 @@ int mlx5e_ipsec_build_accel_xfrm_attrs(struct mlx5e_ipsec_sa_entry *sa_entry,
 	u32 replay_window;
 
 	lockdep_assert_held(&x->lock);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx)
 		return -ENOENT;
 	replay_window = sx->replay_esn->replay_window;
@@ -521,7 +521,7 @@ static int mlx5e_xfrm_validate_state(struct mlx5_core_dev *mdev,
 	u32 replay_window;
 
 	xfrm_sub_state_lock_bh(x);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx) {
 		xfrm_sub_state_unlock_bh(x);
 		NL_SET_ERR_MSG_MOD(extack, "XFRM sub state is unavailable");
@@ -1152,7 +1152,7 @@ static void mlx5e_xfrm_update_stats(struct xfrm_state *x)
 		goto out;
 	ipsec_rule = &sa_entry->ipsec_rule;
 	net = dev_net(sa_entry->dev);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx)
 		goto out;
 

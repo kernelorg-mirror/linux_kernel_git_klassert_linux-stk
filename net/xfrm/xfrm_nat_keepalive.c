@@ -194,7 +194,7 @@ static void nat_keepalive_work_single(struct xfrm_state *x,
 
 	xfrm_sub_state_lock(x);
 	write_seqlock(&x->slock);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	interval = x->nat_keepalive_interval;
 	if (!sx || x->km.state == XFRM_STATE_DEAD || !interval)
 		goto unlock;

@@ -428,7 +428,7 @@ int esp_output_head(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 
 			xfrm_sub_state_lock_bh(x);
 
-			sx = xfrm_sub_state_get(x);
+			sx = xfrm_sub_state_get(x, x->id.proto);
 			if (!sx) {
 				xfrm_sub_state_unlock_bh(x);
 				return -ENOENT;
@@ -546,7 +546,7 @@ int esp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct esp_info *
 
 		xfrm_sub_state_lock_bh(x);
 
-		sx = xfrm_sub_state_get(x);
+		sx = xfrm_sub_state_get(x, x->id.proto);
 		if (!sx) {
 			xfrm_sub_state_unlock_bh(x);
 			err = -ENOENT;

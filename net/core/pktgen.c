@@ -2731,7 +2731,7 @@ static int pktgen_output_ipsec(struct sk_buff *skb, struct pktgen_dev *pkt_dev)
 		goto error;
 	}
 	xfrm_sub_state_lock_bh(x);
-	sx = xfrm_sub_state_get(x);
+	sx = xfrm_sub_state_get(x, x->id.proto);
 	if (!sx) {
 		xfrm_sub_state_unlock_bh(x);
 		XFRM_INC_STATS(net, LINUX_MIB_XFRMOUTERROR);

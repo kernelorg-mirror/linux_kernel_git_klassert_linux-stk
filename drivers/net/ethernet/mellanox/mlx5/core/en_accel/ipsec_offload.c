@@ -379,7 +379,7 @@ static void mlx5e_ipsec_handle_limits(struct mlx5e_ipsec_sa_entry *sa_entry)
 		/* It is not lifetime event */
 		return;
 
-	sx = xfrm_sub_state_get(sa_entry->x);
+	sx = xfrm_sub_state_get(sa_entry->x, sa_entry->x->id.proto);
 	if (!sx)
 		return;
 
