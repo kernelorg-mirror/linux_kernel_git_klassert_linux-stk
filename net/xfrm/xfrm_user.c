@@ -750,17 +750,22 @@ static int attach_subsa_info(struct xfrm_state *x, struct nlattr *rta,
 			     struct netlink_ext_ack *extack)
 {
 	struct xfrm_subsa_info *subsa_info;
-	struct xfrm_subsa_info *xsubsa_info;
 
 	if (!rta)
 		return 0;
 
 	subsa_info = nla_data(rta);
-	xsubsa_info = &x->subsa;
+	if (nla_len(rta) < sizeof(struct xfrm_subsa_info)) {
+		NL_SET_ERR_MSG(extack, "Invalid sub SA attribute length");
+		return -EINVAL;
+	}
 
-	xsubsa_info = kmemdup(subsa_info, sizeof(struct xfrm_subsa_info), GFP_KERNEL);
-	if (!xsubsa_info)
-		return -ENOMEM;
+	if (subsa_info->type != XFRM_SUBSA_TYPE_CPU) {
+		NL_SET_ERR_MSG(extack, "Unsupported sub SA type");
+		return -EINVAL;
+	}
+
+	x->subsa = *subsa_info;
 
 	return 0;
 }
@@ -3924,6 +3929,8 @@ const struct nla_policy xfrma_policy[XFRMA_MAX+1] = {
 	[XFRMA_IPTFS_INIT_DELAY]	= { .type = NLA_U32 },
 	[XFRMA_IPTFS_MAX_QSIZE]		= { .type = NLA_U32 },
 	[XFRMA_IPTFS_PKT_SIZE]	= { .type = NLA_U32 },
+	[XFRMA_SUB_SA]		= NLA_POLICY_MIN_LEN(sizeof(struct xfrm_subsa_info)),
+	[XFRMA_SUB_SA_ID]	= { .type = NLA_U16 },
 };
 EXPORT_SYMBOL_GPL(xfrma_policy);
 
