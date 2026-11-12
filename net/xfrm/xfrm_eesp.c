@@ -578,9 +578,7 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 	eesp_ph = (void *)eesph + sizeof(struct ip_eesp_hdr);
 
 	/* EESP base header */
-	eesph->one = 1;
-	eesph->version = 0;
-	eesph->reserved = 0;
+	eesph->flags = IP_EESP_FLAG_ESP | IP_EESP_VERSION_0;
 	eesph->optlen = 0;
 	/* The session id identifies the per CPU sub SA. */
 	eesph->session_id = raw_smp_processor_id();
@@ -789,6 +787,7 @@ int eesp_input(struct xfrm_state *x, struct sk_buff *skb)
 	struct crypto_aead *aead = x->data;
 	struct aead_request *req;
 	struct sk_buff *trailer;
+	struct ip_eesp_hdr *eesph;
 	int ivlen = crypto_aead_ivsize(aead);
 	int alen = crypto_aead_authsize(aead);
 	int hlen = sizeof(struct ip_eesp_hdr) + sizeof(struct ip_eesp_peer_hdr);
@@ -804,6 +803,16 @@ int eesp_input(struct xfrm_state *x, struct sk_buff *skb)
 	if (!pskb_may_pull(skb, hlen +
 			   (x->props.mode == XFRM_MODE_TUNNEL ? 0 :
 			    sizeof(struct ip_eesp_pyld_hdr))))
+		goto out;
+
+	/*
+	 * The version must be 0 and the reserved bits must be zero, other
+	 * packets have to be dropped.  The ESP compatibility bit is not
+	 * checked, it may be cleared for ESP-in-UDP SAs.
+	 */
+	eesph = ip_eesp_hdr(skb);
+	if (eesph->flags & IP_EESP_RESERVED ||
+	    (eesph->flags & IP_EESP_VERSION_MASK) != IP_EESP_VERSION_0)
 		goto out;
 
 	/* The encrypted data must at least contain the authentication tag. */

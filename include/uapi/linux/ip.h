@@ -136,21 +136,15 @@ struct ip_version {
 #endif
 };
 
-struct ip_eesp_hdr {
-#if defined(__LITTLE_ENDIAN_BITFIELD)
-	__u8 optlen;
-	__u8 one:1,
-	     version:4,
-	     reserved:3;
-#elif defined (__BIG_ENDIAN_BITFIELD)
-	__u8 one:1,
-	     version:4,
-	     reserved:3;
-	__u8 optlen;
-#else
-#error	"Please fix <asm/byteorder.h>"
-#endif
+/* EESP base header flags, see draft-ietf-ipsecme-eesp */
+#define IP_EESP_FLAG_ESP	0x80	/* ESP compatibility bit */
+#define IP_EESP_VERSION_MASK	0x70	/* EESP version */
+#define IP_EESP_VERSION_0	0x00	/* EESP version 0 */
+#define IP_EESP_RESERVED	0x07	/* reserved, must be zero */
 
+struct ip_eesp_hdr {
+	__u8 flags;		/* IP_EESP_FLAG_ESP | IP_EESP_VERSION_* */
+	__u8 optlen;		/* length of the options field */
 	__be16 session_id;
 	__be32 spi;
 };
