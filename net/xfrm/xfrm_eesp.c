@@ -611,6 +611,23 @@ int eesp_output(struct xfrm_state *x, struct sk_buff *skb)
 }
 EXPORT_SYMBOL_GPL(eesp_output);
 
+/*
+ * Get the 64 bit sequence number from the EESP peer header. EESP
+ * transmits the full sequence number on every packet, so the receiver
+ * must use the value from the wire and must not derive the high part
+ * from the local state (as it is done for ESP with ESN).
+ */
+u64 eesp_parse_seq(struct sk_buff *skb)
+{
+	struct ip_eesp_peer_hdr *ph;
+
+	ph = (struct ip_eesp_peer_hdr *)(skb_transport_header(skb) +
+					 sizeof(struct ip_eesp_hdr));
+
+	return ((u64)be32_to_cpu(ph->seq_hi) << 32) | be32_to_cpu(ph->seq_no);
+}
+EXPORT_SYMBOL_GPL(eesp_parse_seq);
+
 static inline int eesp_remove_trailer(struct sk_buff *skb)
 {
 	struct xfrm_state *x = xfrm_input_state(skb);

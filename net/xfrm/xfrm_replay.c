@@ -9,6 +9,19 @@
 #include <linux/export.h>
 #include <net/xfrm.h>
 
+/*
+ * The EESP sequence number is a full 64 bit counter that is transmitted
+ * on every packet. So the receiver takes the high part from the wire and
+ * must not derive it from the local state (as it is done for ESP with
+ * ESN). The sequence number is taken from the skb cb, the same way the
+ * input sequence number is passed for ESP with ESN.
+ */
+static u64 xfrm_replay_eesp_seq(const struct sk_buff *skb)
+{
+	return ((u64)be32_to_cpu(XFRM_SKB_CB(skb)->seq.input.hi) << 32) |
+	       be32_to_cpu(XFRM_SKB_CB(skb)->seq.input.low);
+}
+
 u32 xfrm_replay_seqhi(struct xfrm_sub_state *sx, __be32 net_seq)
 {
 	u32 seq, seq_hi, bottom;
@@ -161,9 +174,10 @@ err:
 
 static void xfrm_replay_advance_bmp(struct xfrm_sub_state *sx, __be32 net_seq);
 static void xfrm_replay_advance_esn(struct xfrm_sub_state *sx, __be32 net_seq);
+static void xfrm_replay_advance_eesp(struct xfrm_sub_state *sx, u64 seq);
 
 void xfrm_replay_advance(struct xfrm_state *x, struct xfrm_sub_state *sx,
-			 __be32 net_seq)
+			 struct sk_buff *skb, __be32 net_seq)
 {
 	u32 diff, seq;
 
@@ -174,6 +188,10 @@ void xfrm_replay_advance(struct xfrm_state *x, struct xfrm_sub_state *sx,
 		xfrm_replay_advance_bmp(sx, net_seq);
 		goto out;
 	case XFRM_REPLAY_MODE_ESN:
+		if (x->id.proto == IPPROTO_EESP) {
+			xfrm_replay_advance_eesp(sx, xfrm_replay_eesp_seq(skb));
+			goto out;
+		}
 		xfrm_replay_advance_esn(sx, net_seq);
 		xfrm_dev_state_advance_esn(x);
 		goto out;
@@ -486,6 +504,52 @@ static int xfrm_replay_overflow_esn(struct xfrm_state *x, struct xfrm_sub_state 
 	return err;
 }
 
+static int xfrm_replay_check_eesp(struct xfrm_sub_state *sx,
+				   struct sk_buff *skb, u64 seq)
+{
+	unsigned int bitnr, nr;
+	struct xfrm_replay_state_esn *replay_esn = xfrm_replay_state_get(sx);
+	u64 top, diff;
+	u32 wsize;
+
+	if (!replay_esn)
+		return -EINVAL;
+
+	wsize = replay_esn->replay_window;
+	if (!wsize)
+		return 0;
+
+	top = ((u64)replay_esn->seq_hi << 32) | replay_esn->seq;
+
+	/* 0 is not a valid sequence number. */
+	if (unlikely(seq == 0))
+		goto err;
+
+	/* the packet is newer than the window, it is always accepted */
+	if (likely(seq > top))
+		return 0;
+
+	diff = top - seq;
+	if (diff >= wsize) {
+		sx->stats.replay_window++;
+		goto err;
+	}
+
+	/* the packet is within the window, check the bitmap */
+	bitnr = (u32)((seq - 1) % wsize);
+	nr = bitnr >> 5;
+	bitnr = bitnr & 0x1F;
+	if (replay_esn->bmp[nr] & (1U << bitnr))
+		goto err_replay;
+
+	return 0;
+
+err_replay:
+	sx->stats.replay++;
+err:
+	return -EINVAL;
+}
+
 static int xfrm_replay_check_esn(struct xfrm_sub_state *sx,
 				 struct sk_buff *skb, __be32 net_seq)
 {
@@ -560,6 +624,9 @@ int xfrm_replay_check(struct xfrm_state *x, struct xfrm_sub_state *sx,
 	case XFRM_REPLAY_MODE_BMP:
 		return xfrm_replay_check_bmp(sx, skb, net_seq);
 	case XFRM_REPLAY_MODE_ESN:
+		if (x->id.proto == IPPROTO_EESP)
+			return xfrm_replay_check_eesp(sx, skb,
+						      xfrm_replay_eesp_seq(skb));
 		return xfrm_replay_check_esn(sx, skb, net_seq);
 	}
 
@@ -588,10 +655,62 @@ int xfrm_replay_recheck(struct xfrm_state *x, struct xfrm_sub_state *sx,
 		/* no special recheck treatment */
 		return xfrm_replay_check_bmp(sx, skb, net_seq);
 	case XFRM_REPLAY_MODE_ESN:
+		if (x->id.proto == IPPROTO_EESP)
+			return xfrm_replay_check_eesp(sx, skb,
+						      xfrm_replay_eesp_seq(skb));
 		return xfrm_replay_recheck_esn(sx, skb, net_seq);
 	}
 
 	return xfrm_replay_check_legacy(x, sx, skb, net_seq);
+}
+
+static void xfrm_replay_advance_eesp(struct xfrm_sub_state *sx, u64 seq)
+{
+	unsigned int bitnr, nr, i;
+	struct xfrm_replay_state_esn *replay_esn = xfrm_replay_state_get(sx);
+	u64 top, diff;
+	u32 wsize;
+
+	if (!replay_esn)
+		return;
+
+	wsize = replay_esn->replay_window;
+	if (!wsize)
+		return;
+
+	top = ((u64)replay_esn->seq_hi << 32) | replay_esn->seq;
+
+	if (seq > top) {
+		diff = seq - top;
+
+		if (diff < wsize) {
+			/*
+			 * Clear the bits of the sequence numbers that were
+			 * skipped. Their position in the window is reused by
+			 * the new sequence number.
+			 */
+			for (i = 1; i < diff; i++) {
+				bitnr = (u32)((seq - 1 - i) % wsize);
+				nr = bitnr >> 5;
+				bitnr = bitnr & 0x1F;
+				replay_esn->bmp[nr] &= ~(1U << bitnr);
+			}
+		} else {
+			/* the window is shifted completely, reset it */
+			nr = (wsize - 1) >> 5;
+			for (i = 0; i <= nr; i++)
+				replay_esn->bmp[i] = 0;
+		}
+
+		replay_esn->seq_hi = seq >> 32;
+		replay_esn->seq = (u32)seq;
+	}
+
+	/* mark the sequence number as received */
+	bitnr = (u32)((seq - 1) % wsize);
+	nr = bitnr >> 5;
+	bitnr = bitnr & 0x1F;
+	replay_esn->bmp[nr] |= (1U << bitnr);
 }
 
 static void xfrm_replay_advance_esn(struct xfrm_sub_state *sx, __be32 net_seq)

@@ -16,6 +16,7 @@
 #include <linux/netdevice.h>
 #include <linux/percpu.h>
 #include <net/dst.h>
+#include <net/eesp.h>
 #include <net/ip.h>
 #include <net/xfrm.h>
 #include <net/ip_tunnels.h>
@@ -678,8 +679,20 @@ process:
 			goto drop_unlock;
 		}
 
-		if (x->props.flags & XFRM_STATE_ESN)
+		if (x->id.proto == IPPROTO_EESP) {
+			/*
+			 * EESP transmits the full 64 bit sequence number in the
+			 * peer header, so use the value from the wire. The high
+			 * part must not be derived from the local state as it is
+			 * done for ESP with ESN.
+			 */
+			u64 seq64 = eesp_parse_seq(skb);
+
+			seq = cpu_to_be32((u32)seq64);
+			seq_hi = cpu_to_be32(seq64 >> 32);
+		} else if (x->props.flags & XFRM_STATE_ESN) {
 			seq_hi = htonl(xfrm_replay_seqhi(sx, seq));
+		}
 
 		XFRM_SKB_CB(skb)->seq.input.low = seq;
 		XFRM_SKB_CB(skb)->seq.input.hi = seq_hi;
@@ -742,7 +755,7 @@ resume:
 			goto drop_unlock;
 		}
 
-		xfrm_replay_advance(x, sx, seq);
+		xfrm_replay_advance(x, sx, skb, seq);
 
 		sx->curlbt.bytes += skb->len;
 		sx->curlbt.packets++;

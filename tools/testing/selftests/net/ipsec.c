@@ -977,6 +977,21 @@ static int xfrm_state_add(int xfrm_sock, uint32_t seq, uint32_t spi,
 	if (xfrm_state_pack_algo(&req.nh, sizeof(req), desc))
 		return -1;
 
+	if (desc->proto == IPPROTO_EESP) {
+		struct xfrm_replay_state_esn replay_esn = {
+			.replay_window = 32,
+			.bmp_len = 1,
+		};
+
+		/*
+		 * EESP only supports 64 bit sequence numbers, so the SA
+		 * needs the ESN replay state.
+		 */
+		if (rtattr_pack(&req.nh, sizeof(req), XFRMA_REPLAY_ESN_VAL,
+				&replay_esn, sizeof(replay_esn)))
+			return -1;
+	}
+
 	if (send(xfrm_sock, &req, req.nh.nlmsg_len, 0) < 0) {
 		pr_err("send()");
 		return -1;

@@ -145,6 +145,12 @@ static inline int verify_replay(struct xfrm_usersa_info *p,
 	struct nlattr *rt = attrs[XFRMA_REPLAY_ESN_VAL];
 	struct xfrm_replay_state_esn *rs;
 
+	if (p->id.proto == IPPROTO_EESP && !rt) {
+		NL_SET_ERR_MSG(extack,
+			       "EESP requires the ESN replay attribute, the sequence number is a full 64 bit counter");
+		return -EINVAL;
+	}
+
 	if (!rt) {
 		if (p->flags & XFRM_STATE_ESN) {
 			NL_SET_ERR_MSG(extack, "Missing required attribute for ESN");
@@ -452,6 +458,14 @@ static int verify_newsa_info(struct xfrm_usersa_info *p,
 		goto out;
 	if ((err = verify_sec_ctx_len(attrs, extack)))
 		goto out;
+	/*
+	 * EESP only supports 64 bit sequence numbers (a.k.a. ESN) and
+	 * transmits the full sequence number on every packet. So EESP SAs
+	 * always use the ESN replay state.
+	 */
+	if (p->id.proto == IPPROTO_EESP)
+		p->flags |= XFRM_STATE_ESN;
+
 	if ((err = verify_replay(p, attrs, sa_dir, extack)))
 		goto out;
 

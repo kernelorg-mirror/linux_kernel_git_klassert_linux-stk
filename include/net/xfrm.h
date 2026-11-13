@@ -2116,7 +2116,7 @@ static inline int xfrm_policy_id2dir(u32 index)
 
 #ifdef CONFIG_XFRM
 void xfrm_replay_advance(struct xfrm_state *x, struct xfrm_sub_state *sx,
-			 __be32 net_seq);
+			 struct sk_buff *skb, __be32 net_seq);
 int xfrm_replay_check(struct xfrm_state *x, struct xfrm_sub_state *sx,
 		      struct sk_buff *skb, __be32 net_seq);
 void xfrm_replay_notify(struct xfrm_state *x, int event);

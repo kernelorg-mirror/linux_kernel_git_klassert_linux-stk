@@ -28,6 +28,7 @@ struct eesp_info {
 	bool	inplace;
 };
 
+u64 eesp_parse_seq(struct sk_buff *skb);
 int eesp_output_head(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info *eesp);
 int eesp_output_tail(struct xfrm_state *x, struct sk_buff *skb, struct eesp_info *eesp);
 int eesp_input_done2(struct sk_buff *skb, int err);
